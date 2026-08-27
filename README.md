@@ -217,6 +217,11 @@ AI/
 │   ├── collect.py
 │   └── verify.py              데이터셋 전체 계약 게이트
 ├── vlm/                       경량 VLM 파인튜닝 자리. 비어 있음 (이슈 36)
+├── track_a/                   ★ 트랙 A (현실·기하). 골격만 — 구현 없음
+│   ├── calibration/           카메라 캘리브레이션 (이슈 28)
+│   ├── pose/                  pose → 로봇 좌표 변환 (이슈 29)
+│   ├── sync/                  pose ↔ 영상 시간동기화 (이슈 30)
+│   └── convert/               raw → dataset 변환 (이슈 31)
 ├── tracking/
 │   └── exp_log.py             EXP_LOG.jsonl 추가 전용 트래커
 ├── tools/                     실행 진입점 (얇은 셸)
@@ -237,7 +242,23 @@ AI/
 | 두 번째 시뮬레이터 | `sim/<백엔드>/` 에 `sim/base.py` 의 `RobotEnv` 구현 |
 | 관절 범위·링크 길이·카메라 위치·파지 파라미터 | `configs/so101.yaml`. **코드에 쓰지 마라** |
 | 새 실행 명령 | `tools/` 에 얇은 셸 + 패키지 안의 `main()` |
+| 캘리브레이션·좌표변환·시간동기화·raw 변환 | `track_a/` 의 해당 폴더 (트랙 A 작업) |
 | 실물 로봇 구동 | **여기 아니다.** `RobotEnv` 를 채우는 것은 S15P21A103-46 |
+
+### 트랙 경계
+
+```
+track_a/  →  contract/  ←  sim/ policy/ eval/ data/ vlm/ tracking/
+ 트랙 A       유일한 접점              트랙 B
+```
+
+- **트랙 B 는 `track_a/` 를 임포트하지 않는다.** 계약을 만족하는 에피소드만 보고,
+  그것이 어떻게 만들어졌는지 알 필요가 없다
+- **트랙 A 는 `sim/` `policy/` `eval/` 을 임포트하지 않는다.** 필요한 것은 `contract/` 다
+- 이 경계를 넘는 임포트가 생기면 접점이 둘이 된 것이다. D-AI 기록이 필요하다
+
+⚠️ **비대칭이다.** 트랙 B 코드는 `track_b/` 로 묶여 있지 않고 기능별로 흩어져 있다.
+   대칭으로 만들 이유가 생기면 그때 옮긴다. 지금 옮기면 임포트 경로만 또 바뀐다.
 
 **정책은 백엔드 디렉터리를 임포트하지 않는다.** `policy/` 가 보는 것은 `sim/base.py` 뿐이고,
 그 규칙이 지켜지는지는 `tools/check_interface.py` 가 실제로 검사한다.
@@ -292,7 +313,7 @@ python tools/update_readme.py                      # §8 수치 절 재생성
 - 조건: 물체 xy 무작위 ±30mm, 시드 0, 제어 30Hz, 물체 반치수 [0.01, 0.01, 0.01]m, close_cmd 0.06
 - 성공 판정: 들어올린 높이 >= 0.05m 이고 종료 시 접촉 유지
 
-<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `f3b8542a3971` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T06:59:12+00:00</sub>
+<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `cc950576bde4` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T07:19:08+00:00</sub>
 
 ### 작업공간 도달성
 
@@ -303,7 +324,7 @@ python tools/update_readme.py                      # §8 수치 절 재생성
 - 판정: pos_err<5mm AND axis_err<5deg AND 반복 중 관절한계에 걸리지 않음
 - ⚠️ 기구학만 본다. 충돌은 검사하지 않는다
 
-<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `f3b8542a3971` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T06:59:20+00:00</sub>
+<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `cc950576bde4` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T07:19:16+00:00</sub>
 
 ### baseline 성공률과 게이트
 
@@ -339,7 +360,7 @@ python tools/update_readme.py                      # §8 수치 절 재생성
 | ±30mm | 1/4 |
 | ±50mm | 0/4 |
 
-<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `f3b8542a3971` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T06:59:28+00:00</sub>
+<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `cc950576bde4` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T07:19:23+00:00</sub>
 
 ### 데이터 계약 왕복 검증
 
@@ -350,7 +371,7 @@ python tools/update_readme.py                      # §8 수치 절 재생성
 - state 값 범위 실측 [-0.8182, 0.9939] (계약 [-1, 1])
 - 용량 평균 9.20MB/에피소드 → 100건 약 0.92GB, 1000건 약 9.2GB (10진 GB. BE 파트에 전달한 수치와 같은 단위)
 
-<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `f3b8542a3971` · MuJoCo 3.12.0 · Python 3.11.15 · 2026-08-27T06:59:09+00:00</sub>
+<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `cc950576bde4` · MuJoCo 3.12.0 · Python 3.11.15 · 2026-08-27T07:19:06+00:00</sub>
 
 ### 그리퍼 접촉 형상 (MuJoCo 볼록껍질 문제)
 
@@ -368,7 +389,7 @@ MuJoCo 는 메시를 **볼록껍질**로 충돌시킨다. 두 갈래 그리퍼�
 - 패드는 `configs/so101.yaml` 의 `gripper_pads` 로 **로드 시점에 주입**한다. 공식 MJCF 는 수정하지 않는다
 - ⚠️ 관통이 0 이 아니어도 파지는 성공한다. 이 수치는 껍질 형상 진단용이고, 실제 판정은 파지 성공률이다
 
-<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `f3b8542a3971` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T06:59:07+00:00</sub>
+<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `cc950576bde4` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T07:19:03+00:00</sub>
 
 <!-- MEASURED:END -->
 
@@ -507,6 +528,9 @@ feat: 정책 학습 루프 (S15P21A103-42, D-AI-7, MEASURE_sync_0827)
 | `docs/MEASURE_mujoco_scene_0827.md` | 씬 구축, 카메라 배치, config↔MJCF 대조 |
 | `docs/MEASURE_grasp_0827.md` | 파지 가능성, 볼록껍질 문제, 도달성, 계약 왕복 |
 | `docs/MEASURE_baseline_0827.md` | baseline 4종, 게이트, 허용오차, 인터페이스 증명 |
+| `docs/TS_grasp_convex_hull_0827.md` | 파지 0/24 → 볼록껍질 원인 규명. 가설 3개를 어떻게 좁혔나 |
+| `docs/TS_measurement_defects_0827.md` | 내 계측기 결함 5건. **전부 낙관적 방향이었다** |
+| `docs/TS_mjcf_include_0827.md` | 공식 MJCF 를 수정하지 않고 씬을 만들기까지 |
 
 각 MEASURE 문서에는 **정정 절**이 있다. 계측 자체의 결함으로 이전 수치가 낙관적으로
 편향돼 있던 경우를 그 자리에 남긴다 — 지우고 새 수치만 쓰면 같은 실수를 또 한다.
