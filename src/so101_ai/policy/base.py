@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from envs.robot_env import Observation
+from so101_ai.sim.env import Observation
 
 
 @runtime_checkable

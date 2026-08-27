@@ -25,19 +25,18 @@ from typing import Any
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from envs.robot_env import MujocoPickEnv  # noqa: E402
-from policy.base import Policy  # noqa: E402
-from policy.baselines import (  # noqa: E402
+from so101_ai.sim.env import MujocoPickEnv
+from so101_ai.policy.base import Policy
+from so101_ai.policy.baselines import (
     HoldPolicy,
     ReplayPolicy,
     ScriptedPickPolicy,
     ZeroPolicy,
 )
 
-from build_scene import DEFAULT_CONFIG, load_config  # noqa: E402
-from exp_log import file_digest, log_run  # noqa: E402
+from so101_ai.sim.build_scene import DEFAULT_CONFIG, load_config
+from so101_ai.tracking.exp_log import file_digest, log_run
 
 
 # Fixed before any number was produced. Changing these after seeing results is

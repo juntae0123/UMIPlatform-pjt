@@ -25,7 +25,7 @@ from typing import Any, Protocol, runtime_checkable
 import mujoco
 import numpy as np
 
-from build_scene import build_model, denormalize, load_config, normalize
+from so101_ai.sim.build_scene import build_model, denormalize, load_config, normalize
 
 
 @dataclass(frozen=True)

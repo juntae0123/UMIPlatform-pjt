@@ -25,8 +25,8 @@ import copy
 import mujoco
 import numpy as np
 
-from build_scene import DEFAULT_CONFIG, build_model, load_config
-from exp_log import file_digest, log_run
+from so101_ai.sim.build_scene import DEFAULT_CONFIG, build_model, load_config
+from so101_ai.tracking.exp_log import file_digest, log_run
 
 
 def gap_curve(model: mujoco.MjModel, angles: np.ndarray) -> list[tuple[float, float]]:

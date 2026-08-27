@@ -23,11 +23,10 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from envs.robot_env import Observation, RobotEnv  # noqa: E402
-from policy.base import Policy  # noqa: E402
-from policy.baselines import HoldPolicy, ReplayPolicy, ZeroPolicy  # noqa: E402
+from so101_ai.sim.env import Observation, RobotEnv
+from so101_ai.policy.base import Policy
+from so101_ai.policy.baselines import HoldPolicy, ReplayPolicy, ZeroPolicy
 
 IMAGE_SHAPE = (3, 224, 224)
 
