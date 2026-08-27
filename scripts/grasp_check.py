@@ -35,6 +35,7 @@ class GraspResult:
     스크립트 파지 시도 한 번의 결과."""
 
     success: bool
+    lift_ik_converged: bool
     object_xy: tuple[float, float]
     lift_height_m: float
     grip_force_at_close_n: float
@@ -152,6 +153,7 @@ def run_grasp(
         if not res.ok:
             return GraspResult(
                 success=False,
+                lift_ik_converged=False,
                 object_xy=(float(obj_xyz[0]), float(obj_xyz[1])),
                 lift_height_m=0.0,
                 grip_force_at_close_n=0.0,
@@ -171,6 +173,13 @@ def run_grasp(
     res = solve_pose_ik(model, lift_target, offset, axis, q_init=data.qpos[:6], wrist_roll=wrist_roll)
     pos_errs.append(res.pos_error_m * 1000.0)
     axis_errs.append(res.axis_error_deg)
+    # A non-converged lift solve still moves the arm — clamped at a joint limit,
+    # with the gripper tilted. The object may well rise, and the run then looks
+    # like a success that nobody asked for. Record it instead of hiding it.
+    # 수렴하지 않은 들어올림 해도 팔을 움직이기는 한다 — 관절한계에 클램프된 채,
+    # 그리퍼가 기울어져서. 물체가 올라가기도 하고, 그러면 아무도 요청하지 않은
+    # 성공처럼 보인다. 숨기지 말고 기록한다.
+    lift_ik_converged = res.ok
     move_to(model, data, res.qpos, float(g["close_cmd"]), 1.5, rate_hz)
     hold(model, data, 0.8)
 
@@ -190,6 +199,7 @@ def run_grasp(
 
     return GraspResult(
         success=success,
+        lift_ik_converged=lift_ik_converged,
         object_xy=(float(obj_xyz[0]), float(obj_xyz[1])),
         lift_height_m=round(lifted, 5),
         grip_force_at_close_n=round(force, 3),
@@ -230,7 +240,10 @@ def main() -> None:
 
     n_ok = sum(r.success for r in results)
     rate = n_ok / len(results)
+    n_bad_ik = sum(not r.lift_ik_converged for r in results if r.contacts_at_close > 0)
     print(f"\n성공률 {n_ok}/{len(results)} = {rate * 100:.1f}%  (jitter ±{args.jitter * 1000:.0f}mm, seed={args.seed})")
+    if n_bad_ik:
+        print(f"⚠️ 들어올림 IK 미수렴 {n_bad_ik}회 — 그 시행의 성공은 요청한 자세로 얻은 것이 아니다")
     reasons: dict[str, int] = {}
     for r in results:
         if r.failure_reason:
@@ -251,6 +264,7 @@ def main() -> None:
                 "control_rate_hz": cfg["control"]["rate_hz"],
                 "object_half_size_m": cfg["task"]["object"]["half_size_m"],
                 "close_cmd": cfg["grasp"]["close_cmd"],
+                "lift_height_m": cfg["grasp"]["lift_height_m"],
                 "success_criterion": f"들어올린 높이 >= {cfg['grasp']['success_lift_m']}m 이고 종료 시 접촉 유지",
             },
             result={
@@ -258,6 +272,7 @@ def main() -> None:
                 "n_success": n_ok,
                 "n_trials": len(results),
                 "failure_reasons": reasons,
+                "lift_ik_not_converged": n_bad_ik,
                 "trials": [asdict(r) for r in results],
             },
         )
