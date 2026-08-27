@@ -23,7 +23,7 @@ import mujoco
 import numpy as np
 import yaml
 
-from so101_ai.paths import AI_ROOT, DEFAULT_CONFIG, DEFAULT_SCENE  # noqa: F401
+from paths import AI_ROOT, DEFAULT_CONFIG, DEFAULT_SCENE  # noqa: F401
 
 REPO_AI_ROOT = AI_ROOT
 

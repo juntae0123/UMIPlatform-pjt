@@ -22,9 +22,9 @@ from pathlib import Path
 
 import numpy as np
 
-from so101_ai.sim.build_scene import DEFAULT_CONFIG, build_model, load_config
-from so101_ai.tracking.exp_log import file_digest, log_run
-from so101_ai.sim.kinematics import solve_pose_ik
+from sim.mujoco.build_scene import DEFAULT_CONFIG, build_model, load_config
+from tracking.exp_log import file_digest, log_run
+from sim.mujoco.kinematics import solve_pose_ik
 
 
 def main() -> None:

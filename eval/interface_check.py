@@ -24,9 +24,9 @@ from pathlib import Path
 import numpy as np
 
 
-from so101_ai.sim.env import Observation, RobotEnv
-from so101_ai.policy.base import Policy
-from so101_ai.policy.baselines import HoldPolicy, ReplayPolicy, ZeroPolicy
+from sim.base import Observation, RobotEnv
+from policy.base import Policy
+from policy.baselines import HoldPolicy, ReplayPolicy, ZeroPolicy
 
 IMAGE_SHAPE = (3, 224, 224)
 
@@ -115,7 +115,7 @@ def check(policy: Policy, ticks: int = 30) -> tuple[bool, str]:
 
 
 def main() -> int:
-    dataset = Path("data/sim_pick_v0")
+    dataset = Path("datasets/sim_pick_v0")
     episodes = sorted(dataset.glob("*.npz"))
 
     policies: list[Policy] = [HoldPolicy(), ZeroPolicy()]

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from so101_ai.paths import AI_ROOT, DEFAULT_EXP_LOG
+from paths import AI_ROOT, CODE_GLOBS, DEFAULT_EXP_LOG
 
 REPO_AI_ROOT = AI_ROOT
 DEFAULT_LOG = DEFAULT_EXP_LOG
@@ -72,9 +72,7 @@ def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
-# What counts as "the code that produced this number".
-# "이 수치를 만든 코드"에 해당하는 것.
-CODE_GLOBS: tuple[str, ...] = ("src/so101_ai/**/*.py", "configs/*.yaml", "scenes/*.xml")
+# CODE_GLOBS ("이 수치를 만든 코드") 는 paths.py 가 정한다.
 
 
 def code_digest(root: Path = REPO_AI_ROOT, globs: tuple[str, ...] = CODE_GLOBS) -> str:

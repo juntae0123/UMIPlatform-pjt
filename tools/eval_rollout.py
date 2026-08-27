@@ -1,13 +1,20 @@
-"""CLI entry point for `so101_ai.eval.rollout`.
-`so101_ai.eval.rollout` 의 CLI 진입점.
+"""CLI entry point for `eval.rollout`.
+`eval.rollout` 의 CLI 진입점.
 
-Equivalent to `python -m so101_ai.eval.rollout`. This file exists so the runnable
-commands are discoverable in one directory.
-`python -m so101_ai.eval.rollout` 과 같다. 실행 가능한 명령이 한 디렉터리에서 보이도록
-두는 파일이다.
+Run from the AI/ directory. The sys.path line is what lets
+`python tools/eval_rollout.py` work as well as `python -m tools.eval_rollout` — it is
+here, in the entry-point layer, and nowhere in the library code.
+AI/ 디렉터리에서 실행한다. sys.path 한 줄은 `python -m tools.eval_rollout` 뿐 아니라
+`python tools/eval_rollout.py` 도 되게 하려고 있다. 진입점 층에만 두고 라이브러리
+코드에는 두지 않는다.
 """
 
-from so101_ai.eval.rollout import main
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from eval.rollout import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -1,81 +1,29 @@
-"""The one seam between a policy and whatever is on the other side of it.
-정책과 그 반대편에 있는 것 사이의 유일한 이음매.
+"""MuJoCo implementation of `sim/base.py`'s `RobotEnv`.
+`sim/base.py` 의 `RobotEnv` 를 MuJoCo 로 구현한 것.
 
-S15P21A103-60 asks for the same policy code to run against simulation and
-against the real arm. That is only true if the policy never learns which one it
-is talking to — so everything simulator-specific lives behind `RobotEnv`, and a
-policy only ever sees an `Observation` and returns an action in contract units.
-S15P21A103-60 의 요구는 같은 정책 코드가 시뮬과 실물 양쪽에서 도는 것이다.
-정책이 자기가 어느 쪽과 얘기하는지 **모를 때만** 그게 성립한다. 그래서 시뮬에
-고유한 것은 전부 `RobotEnv` 뒤에 두고, 정책은 `Observation` 을 받아 계약 단위의
-행동만 돌려준다.
+The protocol itself is NOT here — it is in `sim/base.py`, deliberately free of
+any MuJoCo import, so a second backend (Isaac Sim) or the real arm satisfies the
+same surface. This file is one backend among those.
+프로토콜 자체는 여기 없다. `sim/base.py` 에 있고 MuJoCo 임포트가 의도적으로
+없다. 두 번째 백엔드(Isaac Sim)든 실물 팔이든 같은 표면을 만족시키게 하려는
+것이다. 이 파일은 그중 백엔드 하나다.
 
-The real-robot implementation is NOT in this file and does not exist yet. It
-belongs to S15P21A103-46 ([ROS] 정책 ckpt 로드→추론 노드). What this file
-guarantees is that it has one shape to fill in.
-실물 구현은 이 파일에 없고 아직 존재하지도 않는다. S15P21A103-46 의 몫이다.
-이 파일이 보장하는 것은, 채워 넣을 형태가 하나로 정해져 있다는 것뿐이다.
+The real-robot implementation does not exist yet — S15P21A103-46
+([ROS] 정책 ckpt 로드→추론 노드). What the protocol guarantees is that it has
+one shape to fill in.
+실물 구현은 아직 존재하지 않는다 — S15P21A103-46. 프로토콜이 보장하는 것은
+채워 넣을 형태가 하나로 정해져 있다는 것뿐이다.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import mujoco
 import numpy as np
 
-from so101_ai.sim.build_scene import build_model, denormalize, load_config, normalize
-
-
-@dataclass(frozen=True)
-class Observation:
-    """What a policy sees at one control tick — data-contract units.
-    정책이 제어 틱 한 번에 보는 것. 데이터 계약 단위.
-
-    Field shapes and dtypes match `schema/contract.py` exactly. If they drift
-    apart, a policy trained on recorded data will silently receive something
-    different at inference time.
-    필드의 shape 과 dtype 은 `schema/contract.py` 와 정확히 일치한다. 둘이 갈라지면,
-    기록 데이터로 학습한 정책이 추론 시점에 다른 것을 조용히 받게 된다.
-    """
-
-    images: dict[str, np.ndarray]  # camera name -> (3, 224, 224) uint8, CHW
-    state: np.ndarray  # (6,) float32, normalized to [-1, 1]
-    timestamp: float  # seconds since episode start
-
-
-@runtime_checkable
-class RobotEnv(Protocol):
-    """What a policy is allowed to know about the world.
-    정책이 세상에 대해 알아도 되는 전부."""
-
-    @property
-    def control_rate_hz(self) -> float:
-        """Ticks per second the policy is called at.
-        정책이 호출되는 주기."""
-        ...
-
-    @property
-    def camera_names(self) -> list[str]:
-        """Cameras present in the observation, in a stable order.
-        관측에 들어오는 카메라. 순서는 고정."""
-        ...
-
-    def reset(self, seed: int | None = None) -> Observation:
-        """Put the world back to a start state and return the first observation.
-        세상을 시작 상태로 되돌리고 첫 관측을 반환한다."""
-        ...
-
-    def step(self, action: np.ndarray) -> Observation:
-        """Apply one normalized action and advance one control tick.
-        정규화된 행동 하나를 적용하고 제어 틱 하나만큼 진행한다."""
-        ...
-
-    def is_success(self) -> bool:
-        """Whether the task is currently satisfied.
-        지금 태스크가 달성된 상태인가."""
-        ...
+from sim.base import Observation, RobotEnv  # noqa: F401 — 재수출: 하위 호환용 아님, 타입 참조용
+from sim.mujoco.build_scene import build_model, denormalize, load_config, normalize
 
 
 class MujocoPickEnv:

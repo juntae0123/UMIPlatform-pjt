@@ -19,8 +19,8 @@
   선언하는데, 그대로 두면 이 파일 기준으로 풀려서 메시를 못 찾는다.
 -->
 <mujoco model="so101_pick_place">
-  <include file="../third_party/so101_mujoco/SO101/so101_new_calib.xml"/>
-  <compiler angle="radian" meshdir="../third_party/so101_mujoco/SO101/assets" autolimits="true"/>
+  <include file="../../../third_party/so101_mujoco/SO101/so101_new_calib.xml"/>
+  <compiler angle="radian" meshdir="../../../third_party/so101_mujoco/SO101/assets" autolimits="true"/>
 
   <visual>
     <global offwidth="640" offheight="640" azimuth="160" elevation="-20"/>
