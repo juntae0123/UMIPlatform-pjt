@@ -11,12 +11,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# .../AI/src/so101_ai/paths.py -> parents[2] == .../AI
-AI_ROOT: Path = Path(__file__).resolve().parents[2]
+# .../AI/paths.py -> parent == .../AI
+AI_ROOT: Path = Path(__file__).resolve().parent
 
 CONFIG_DIR: Path = AI_ROOT / "configs"
-SCENE_DIR: Path = AI_ROOT / "scenes"
 DOCS_DIR: Path = AI_ROOT / "docs"
+OUT_DIR: Path = AI_ROOT / "out"
+# datasets/ 는 수집 데이터셋, data/ 는 수집·검증 코드다. 섞지 않는다.
+DATASET_DIR: Path = AI_ROOT / "datasets"
+
+# Scene files are simulator-specific: MJCF here, USD under sim/isaac/ later.
+# 씬 파일은 시뮬레이터 고유하다. 여기는 MJCF, 나중에 sim/isaac/ 아래 USD.
+MUJOCO_SCENE_DIR: Path = AI_ROOT / "sim" / "mujoco" / "scenes"
 
 # Official SO-101 MJCF/URDF. Vendored, never edited — replaced wholesale on update.
 # 공식 SO-101 MJCF/URDF. 벤더링만 하고 수정하지 않는다. 업데이트 시 통째로 교체.
@@ -24,8 +30,23 @@ THIRD_PARTY: Path = AI_ROOT / "third_party"
 SO101_MJCF_DIR: Path = THIRD_PARTY / "so101_mujoco" / "SO101"
 
 DEFAULT_CONFIG: Path = CONFIG_DIR / "so101.yaml"
-DEFAULT_SCENE: Path = SCENE_DIR / "pick_place.xml"
+DEFAULT_SCENE: Path = MUJOCO_SCENE_DIR / "pick_place.xml"
 DEFAULT_EXP_LOG: Path = AI_ROOT / "EXP_LOG.jsonl"
+
+# What counts as "the code that produced a number" — see tracking/exp_log.py.
+# "수치를 만든 코드"에 해당하는 것 — tracking/exp_log.py 참조.
+CODE_GLOBS: tuple[str, ...] = (
+    "*.py",
+    "contract/**/*.py",
+    "sim/**/*.py",
+    "policy/**/*.py",
+    "eval/**/*.py",
+    "data/**/*.py",
+    "vlm/**/*.py",
+    "tracking/**/*.py",
+    "configs/*.yaml",
+    "sim/**/scenes/*",
+)
 
 
 def require(path: Path, what: str) -> Path:

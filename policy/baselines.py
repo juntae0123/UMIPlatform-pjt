@@ -24,10 +24,11 @@ from pathlib import Path
 
 import numpy as np
 
-from so101_ai.sim.build_scene import normalize
-from so101_ai.sim.env import MujocoPickEnv, Observation
-from so101_ai.sim.kinematics import solve_pose_ik
-from so101_ai.policy.base import check_action
+from sim.mujoco.build_scene import normalize
+from sim.base import Observation
+from sim.mujoco.env import MujocoPickEnv
+from sim.mujoco.kinematics import solve_pose_ik
+from policy.base import check_action
 
 
 class HoldPolicy:

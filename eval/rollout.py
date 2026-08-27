@@ -26,17 +26,17 @@ from typing import Any
 import numpy as np
 
 
-from so101_ai.sim.env import MujocoPickEnv
-from so101_ai.policy.base import Policy
-from so101_ai.policy.baselines import (
+from sim.mujoco.env import MujocoPickEnv
+from policy.base import Policy
+from policy.baselines import (
     HoldPolicy,
     ReplayPolicy,
     ScriptedPickPolicy,
     ZeroPolicy,
 )
 
-from so101_ai.sim.build_scene import DEFAULT_CONFIG, load_config
-from so101_ai.tracking.exp_log import file_digest, log_run
+from sim.mujoco.build_scene import DEFAULT_CONFIG, load_config
+from tracking.exp_log import file_digest, log_run
 
 
 # Fixed before any number was produced. Changing these after seeing results is

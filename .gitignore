@@ -7,9 +7,7 @@ venv/
 out/
 
 # 수집한 데이터셋은 커밋하지 않는다 (에피소드당 약 9MB).
-data/
+# data/ 는 수집·검증 코드이므로 제외 대상이 아니다. 데이터셋은 datasets/ 에 있다.
+datasets/
 
-# editable install 산출물
-*.egg-info/
-build/
 .pytest_cache/
