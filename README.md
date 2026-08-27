@@ -291,6 +291,26 @@ python tools/update_readme.py                      # §8 수치 절 재생성
 
 `python -m tools.grasp_check` 도 같다.
 
+### ⚠️ 경로에 한글이 있으면 (이 저장소가 그렇다)
+
+**MuJoCo 는 XML 을 C++ 에서 열고, Windows 에서 비ASCII 경로를 처리하지 못한다.**
+저장소가 `.../특화/S15P21A103` 아래 있으므로 실제로 걸리는 문제다.
+
+```
+ValueError: ParseXML: Error opening file '...\특화\...\pick_place.xml'
+```
+
+파이썬으로는 읽히는 파일인데 MuJoCo 만 못 여는 것이라 원인이 안 보인다.
+`paths.resolve_for_mujoco()` 가 세 단계로 처리한다:
+
+1. 경로가 ASCII 면 그대로 (대부분)
+2. **Windows 8.3 단축 경로** — 항상 ASCII 이고 복사가 없다
+3. ASCII 임시 경로로 모델 트리 복사 — 단축 이름이 꺼져 있을 때
+   (`fsutil 8dot3name query` 로 확인 가능). 복사하면 그 사실을 출력한다
+
+원본은 건드리지 않고, 복사본은 mtime 으로 캐시된다.
+막히면 저장소를 ASCII 경로로 옮기는 것이 가장 확실하다.
+
 ### 눈으로 보기 — MuJoCo 뷰어
 
 ```bash

@@ -23,7 +23,7 @@ import mujoco
 import numpy as np
 import yaml
 
-from paths import AI_ROOT, DEFAULT_CONFIG, DEFAULT_SCENE  # noqa: F401
+from paths import AI_ROOT, DEFAULT_CONFIG, DEFAULT_SCENE, resolve_for_mujoco  # noqa: F401
 
 REPO_AI_ROOT = AI_ROOT
 
@@ -82,7 +82,9 @@ def build_model(
     cfg = cfg if cfg is not None else load_config()
     cams = cfg["cameras"]
     resolution = cams["resolution"]
-    spec = mujoco.MjSpec.from_file(str(scene_path))
+    # MuJoCo opens XML from C++ and cannot handle non-ASCII paths on Windows.
+    # MuJoCo 는 C++ 에서 XML 을 열고 Windows 에서 비ASCII 경로를 처리하지 못한다.
+    spec = mujoco.MjSpec.from_file(str(resolve_for_mujoco(scene_path)))
 
     names = [k for k in cams if isinstance(cams[k], dict)]
     if len(names) != int(cams["count"]):

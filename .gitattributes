@@ -1,0 +1,20 @@
+# 줄바꿈을 저장소에서 LF 로 고정한다.
+#
+# Git for Windows 는 보통 core.autocrlf=true 로 설치되어, 체크아웃 시 CRLF 로
+# 바꾼다. 그러면 내용을 한 글자도 고치지 않아도 파일 전체가 변경된 것으로 잡히고,
+# 커밋에 줄바꿈 노이즈가 섞여 diff 로 무엇이 바뀌었는지 볼 수 없게 된다.
+# 실제로 2026-08-27 에 view.py 190줄이 그렇게 커밋에 딸려 들어갔다.
+#
+# 여기서 eol=lf 로 못박으면 각자의 autocrlf 설정과 무관하게 동일해진다.
+*.py    text eol=lf
+*.md    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.xml   text eol=lf
+*.txt   text eol=lf
+*.jsonl text eol=lf
+
+# 공식 MJCF·메시는 벤더링본이다. Git 이 내용을 건드리지 않게 한다.
+third_party/** -text
+*.stl   binary
+*.part  binary
