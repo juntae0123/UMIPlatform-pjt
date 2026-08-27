@@ -205,7 +205,8 @@ AI/
 │   │   ├── grasp.py           파지 시퀀스 계측
 │   │   ├── workspace.py       도달성 스캔
 │   │   ├── gripper.py         턱 간격·볼록껍질 프로브
-│   │   └── render_check.py    카메라 렌더 확인
+│   │   ├── render_check.py    카메라 렌더 확인
+│   │   └── view.py           대화형 뷰어 (보는 도구, 재는 도구 아님)
 │   └── isaac/                 검토 대상. 구현 없음 (제약은 __init__.py 참조)
 ├── policy/
 │   ├── base.py                Policy 프로토콜 + uses_privileged_state
@@ -289,6 +290,39 @@ python tools/update_readme.py                      # §8 수치 절 재생성
 ```
 
 `python -m tools.grasp_check` 도 같다.
+
+### 눈으로 보기 — MuJoCo 뷰어
+
+```bash
+cd AI
+pip install mujoco            # 계측용 의존성이 이미 깔려 있으면 생략
+# ⚠️ MUJOCO_GL 을 지운다. egl 은 헤드리스용이라 창이 안 열린다
+#   PowerShell : Remove-Item Env:MUJOCO_GL
+#   cmd        : set MUJOCO_GL=
+#   Linux/macOS: unset MUJOCO_GL
+
+python tools/view.py                                   # 씬만 열어 자유 관찰
+python tools/view.py --policy scripted --episodes 3     # 파지하는 것을 실시간으로
+python tools/view.py --policy scripted --speed 0.5      # 절반 속도로 자세히
+python tools/view.py --policy hold                      # baseline 이 왜 0% 인지 보기
+```
+
+| 조작 | |
+|---|---|
+| 마우스 좌드래그 | 회전 |
+| 마우스 우드래그 | 이동 |
+| 스크롤 | 줌 |
+| **Tab** | **카메라 전환 — `cam_front` / `cam_wrist` 를 여기서 본다** |
+| Ctrl + 좌드래그 | 물체 끌기 |
+| 더블클릭 | 그 물체를 추적 |
+| 스페이스 | 일시정지 / 재생 |
+| 백스페이스 | 초기화 |
+
+⚠️ **뷰어는 보는 도구다. 재는 도구가 아니다.** 실시간으로 도는 에피소드 몇 개는
+성공률이 아니다. 보고할 수치는 고정 시드로 `tools/eval_rollout.py` 에서 낸다.
+
+⚠️ `--policy replay` 는 `datasets/sim_pick_v0` 이 있어야 한다. 데이터셋은 git 에
+   없으므로 먼저 `python tools/collect_sim.py --episodes 20` 을 돌린다.
 
 **`--log` 를 준 실행만 `EXP_LOG.jsonl` 에 남고, §8 수치는 그 로그에서 생성된다.**
 로그에 없는 실험은 "미측정"으로 표시된다.
