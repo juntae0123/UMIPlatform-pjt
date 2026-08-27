@@ -206,7 +206,8 @@ AI/
 │   │   ├── workspace.py       도달성 스캔
 │   │   ├── gripper.py         턱 간격·볼록껍질 프로브
 │   │   ├── render_check.py    카메라 렌더 확인
-│   │   └── view.py           대화형 뷰어 (보는 도구, 재는 도구 아님)
+│   │   ├── view.py           대화형 뷰어 (보는 도구, 재는 도구 아님)
+│   │   └── teleop.py         직접 조작 + 시연 녹화 (계약 포맷)
 │   └── isaac/                 검토 대상. 구현 없음 (제약은 __init__.py 참조)
 ├── policy/
 │   ├── base.py                Policy 프로토콜 + uses_privileged_state
@@ -242,6 +243,7 @@ AI/
 | 새 평가 지표·게이트 | `eval/` |
 | 두 번째 시뮬레이터 | `sim/<백엔드>/` 에 `sim/base.py` 의 `RobotEnv` 구현 |
 | 관절 범위·링크 길이·카메라 위치·파지 파라미터 | `configs/so101.yaml`. **코드에 쓰지 마라** |
+| 사람 시연 데이터 | `tools/teleop.py` 로 수집 → `datasets/sim_teleop_v0` |
 | 새 실행 명령 | `tools/` 에 얇은 셸 + 패키지 안의 `main()` |
 | 캘리브레이션·좌표변환·시간동기화·raw 변환 | `track_a/` 의 해당 폴더 (트랙 A 작업) |
 | 실물 로봇 구동 | **여기 아니다.** `RobotEnv` 를 채우는 것은 S15P21A103-46 |
@@ -291,6 +293,29 @@ python tools/update_readme.py                      # §8 수치 절 재생성
 
 `python -m tools.grasp_check` 도 같다.
 
+### ⚠️ 경로에 한글이 있으면 (이 저장소가 그렇다)
+
+**MuJoCo 는 XML 을 C++ 에서 열고, Windows 에서 비ASCII 경로를 처리하지 못한다.**
+저장소가 `.../특화/S15P21A103` 아래 있으므로 실제로 걸리는 문제다.
+
+```
+ValueError: ParseXML: Error opening file '...\특화\...\pick_place.xml'
+```
+
+파이썬으로는 읽히는 파일인데 MuJoCo 만 못 여는 것이라 원인이 안 보인다.
+`paths.resolve_for_mujoco()` 가 세 단계로 처리한다:
+
+1. 경로가 ASCII 면 그대로 (대부분)
+2. **Windows 8.3 단축 경로** — 항상 ASCII 이고 복사가 없다
+3. ASCII 임시 경로로 모델 트리 복사 — 단축 이름이 꺼져 있을 때
+   (`fsutil 8dot3name query` 로 확인 가능). 복사하면 그 사실을 출력한다
+
+**이 저장소·이 환경에서는 3단계로 해소된다** (실측 2026-08-27). 2단계가 통하지 않아
+`%TEMP%\so101_mjcf_<해시>` 로 35개 파일을 복사한다. 첫 실행만 복사하고 이후는 캐시다.
+
+원본은 건드리지 않고, 복사본은 mtime 으로 캐시된다.
+막히면 저장소를 ASCII 경로로 옮기는 것이 가장 확실하다.
+
 ### 눈으로 보기 — MuJoCo 뷰어
 
 ```bash
@@ -323,6 +348,48 @@ python tools/view.py --policy hold                      # baseline 이 왜 0% �
 
 ⚠️ `--policy replay` 는 `datasets/sim_pick_v0` 이 있어야 한다. 데이터셋은 git 에
    없으므로 먼저 `python tools/collect_sim.py --episodes 20` 을 돌린다.
+
+### 직접 조작하고 시연을 기록하기 — `tools/teleop.py`
+
+**보는 도구가 아니라 조작하는 도구다.** 현재 데이터셋이 학습에 부적합한 이유가
+스크립트 궤적이라 다양성이 없다는 것이고, 사람이 직접 조작하면 그 문제가 풀린다.
+실물 리더-팔로워의 시뮬 대응물이다 — **하드웨어 없이 궤적 다양성을 만들 수 있다.**
+
+```bash
+cd AI
+unset MUJOCO_GL
+python tools/teleop.py                                  # datasets/sim_teleop_v0 에 저장
+python tools/teleop.py --jitter 0.05 --max-joint-speed 1.0
+python tools/verify_dataset.py datasets/sim_teleop_v0 --log
+```
+
+| 키 | |
+|---|---|
+| `W`/`S` `A`/`D` `Q`/`E` | 파지점 ±x ±y ±z |
+| `O` / `C` | 그리퍼 열기 / 닫기 |
+| `←` `→` | wrist_roll |
+| `M` / `1`~`6` / `↑` `↓` | 관절 모드 전환 / 관절 선택 / 조작 |
+| `R` | **녹화 시작·정지** (정지 시 계약 검증 후 저장) |
+| `X` `N` `T` `G` `H` | 녹화 취소 / 새 에피소드 / 스텝 크기 / 도달영역 확인 / 도움말 |
+
+저장되는 에피소드 메타에 `teleop: true`, `scripted: false`, `input: keyboard`,
+`object_in_measured_reach_region` 이 들어간다 — 나중에 스크립트 데이터와 섞이지 않게.
+
+**관절 속도가 제한된다** (기본 1.5 rad/s). 제한이 없으면 키 한 번에 명령이 점프해서
+팔이 자기 목표를 추종하지 못하고 물체를 쓸어버린다 — 헤드리스 테스트에서 큐브가
+**7cm 밀려나는 것을 실측**하고 넣었다. 제한 후 이동 1.5mm, 파지 성공.
+
+⚠️ 이 속도 제한은 **도구 수준**이고 실물 서보 사양이 아니다. 실물 속도는 미계측.
+
+⚠️ **녹화 중 이미지 렌더가 무겁다.** 검증 환경(GPU 없는 소프트웨어 EGL) 실측:
+   녹화 OFF 틱당 **0.19ms** / 녹화 ON 틱당 **519ms** (30Hz 예산 33.3ms).
+   **기록된 데이터는 영향받지 않는다** — 타임스탬프가 시뮬 시간이라 계약을 그대로
+   만족한다 (181스텝 재로드, 위반 0건 확인). 조작감만 느려지고, 그 사실을 실행 중에
+   경고로 출력한다. GPU 렌더 환경에서는 사라질 것으로 보이나 **미검증**이다.
+
+⚠️ 궤적 품질은 조작자에게 달려 있다. **환경은 다양하게, 시연 방식은 동일하게** —
+   물체 위치는 매번 바꾸고 접근 궤적·속도·그립 위치는 일관되게 유지한다.
+   녹화 중 물체를 마우스로 끌지 마라. 외력은 정책이 재현할 수 없는 궤적을 만든다.
 
 **`--log` 를 준 실행만 `EXP_LOG.jsonl` 에 남고, §8 수치는 그 로그에서 생성된다.**
 로그에 없는 실험은 "미측정"으로 표시된다.
@@ -565,6 +632,8 @@ feat: 정책 학습 루프 (S15P21A103-42, D-AI-7, MEASURE_sync_0827)
 | `docs/TS_grasp_convex_hull_0827.md` | 파지 0/24 → 볼록껍질 원인 규명. 가설 3개를 어떻게 좁혔나 |
 | `docs/TS_measurement_defects_0827.md` | 내 계측기 결함 5건. **전부 낙관적 방향이었다** |
 | `docs/TS_mjcf_include_0827.md` | 공식 MJCF 를 수정하지 않고 씬을 만들기까지 |
+| `docs/TS_nonascii_path_0827.md` | 한글 경로로 MuJoCo 가 씬을 못 열던 문제. CRLF 노이즈도 함께 |
+| `docs/DEVLOG_0827.md` | 데일리 회고 (KPT). 무엇을 왜 그렇게 판단했나 |
 
 각 MEASURE 문서에는 **정정 절**이 있다. 계측 자체의 결함으로 이전 수치가 낙관적으로
 편향돼 있던 경우를 그 자리에 남긴다 — 지우고 새 수치만 쓰면 같은 실수를 또 한다.
