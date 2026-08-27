@@ -5,3 +5,6 @@ venv/
 
 # 렌더·계측 산출물은 커밋하지 않는다. scripts/render_check.py 로 재생성한다.
 out/
+
+# 수집한 데이터셋은 커밋하지 않는다 (에피소드당 약 9MB).
+data/
