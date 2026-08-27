@@ -35,6 +35,15 @@ DEFAULT_EXP_LOG: Path = AI_ROOT / "EXP_LOG.jsonl"
 
 # What counts as "the code that produced a number" — see tracking/exp_log.py.
 # "수치를 만든 코드"에 해당하는 것 — tracking/exp_log.py 참조.
+#
+# track_a/ is deliberately NOT here. Track A code cannot change what a MuJoCo
+# rollout returns; it changes what a dataset contains, and dataset provenance is
+# recorded per episode by contract/episode.py. Including it would make this digest
+# churn on every Track A commit and stop meaning "same code, same number".
+# track_a/ 는 의도적으로 빼뒀다. 트랙 A 코드는 MuJoCo 롤아웃 결과를 바꿀 수 없다.
+# 바꾸는 것은 데이터셋 내용이고, 그 출처는 contract/episode.py 가 에피소드마다
+# 기록한다. 넣으면 트랙 A 커밋마다 이 해시가 흔들려서 "같은 코드면 같은 수치"라는
+# 의미를 잃는다.
 CODE_GLOBS: tuple[str, ...] = (
     "*.py",
     "contract/**/*.py",
