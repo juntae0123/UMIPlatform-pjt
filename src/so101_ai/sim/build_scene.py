@@ -23,9 +23,9 @@ import mujoco
 import numpy as np
 import yaml
 
-REPO_AI_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = REPO_AI_ROOT / "configs" / "so101.yaml"
-DEFAULT_SCENE = REPO_AI_ROOT / "scenes" / "pick_place.xml"
+from so101_ai.paths import AI_ROOT, DEFAULT_CONFIG, DEFAULT_SCENE  # noqa: F401
+
+REPO_AI_ROOT = AI_ROOT
 
 
 @dataclass(frozen=True)

@@ -20,7 +20,7 @@ import imageio.v3 as iio
 import mujoco
 import numpy as np
 
-from build_scene import build_model, dls_ik, load_config, normalize, verify_against_config
+from so101_ai.sim.build_scene import build_model, dls_ik, load_config, normalize, verify_against_config
 
 
 def settle(model: mujoco.MjModel, data: mujoco.MjData, seconds: float) -> None:
