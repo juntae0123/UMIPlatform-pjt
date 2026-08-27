@@ -71,8 +71,34 @@ MuJoCo 가 파일을 직접 여는 지점이 `build_scene.py` 한 곳뿐임을 �
 | 전 도구 재실행 | 파지 20/20 등 **수치 불변** |
 | **Windows 실기 동작** | **확인됨** — 사용자 환경(conda `aiot_ai`, Git Bash)에서 뷰어 정상 실행 |
 
-⚠️ Windows 에서 2단계(단축 경로)로 해소됐는지 3단계(복사)로 갔는지는 **기록하지 않았다.**
-복사가 일어나면 안내 문구가 출력되므로 다음 실행 때 확인할 수 있다.
+### Windows 실측 — 2단계가 아니라 3단계로 해소됐다 🟢
+
+```
+ℹ️ 경로에 ASCII 가 아닌 문자가 있어 MuJoCo 가 파일을 열지 못한다.
+   모델을 ASCII 경로로 복사해서 로드한다: C:\Users\SSAFY\AppData\Local\Temp\so101_mjcf_0ba894e51e
+   (새로 복사한 파일 35개. 원본은 건드리지 않는다)
+```
+
+복사 파일 35개 = 씬 1 + `third_party` 34. 임시 경로는 `%TEMP%` 아래이고
+사용자명이 ASCII(`SSAFY`)라서 조건을 만족했다.
+
+**즉 2단계(Windows 8.3 단축 경로)는 이 환경에서 통하지 않았다.**
+`resolve_for_mujoco` 를 단축 경로만으로 설계했다면 실패했을 것이고, 3단계를
+넣어둔 것이 실제로 필요했다.
+
+⚠️ 2단계가 왜 안 됐는지는 **구분하지 않았다.** 두 가능성이 있다:
+   ① 볼륨에서 8.3 이름 생성이 꺼져 있다 (`fsutil 8dot3name query C:`)
+   ② `GetShortPathNameW` 는 성공했지만 반환 경로에 여전히 비ASCII 가 남았다
+      — 단축 이름은 컴포넌트별로 부여되므로 `특화` 만 단축되지 않았을 수 있다
+
+   구분하려면 이 한 줄을 돌리면 된다:
+
+```bash
+python -c "from paths import AI_ROOT, _windows_short_path; print(repr(_windows_short_path(AI_ROOT)))"
+```
+
+   `None` 이면 ①(또는 호출 실패), 비ASCII 가 섞인 경로가 나오면 ②다.
+   **어느 쪽이든 3단계가 받아내므로 동작에는 영향이 없다.** 기록만 비어 있다.
 
 ## 곁에서 잡은 것 — CRLF 노이즈
 
