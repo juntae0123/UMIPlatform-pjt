@@ -11,3 +11,6 @@ out/
 datasets/
 
 .pytest_cache/
+
+# 학습 체크포인트는 커밋하지 않는다 (배포는 BE 의 ckpt API 를 통한다).
+checkpoints/

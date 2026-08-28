@@ -239,7 +239,33 @@ def render_gripper(rec: dict[str, Any]) -> list[str]:
     return out
 
 
+def render_train_bc(rec: dict[str, Any]) -> list[str]:
+    c, r = rec["conditions"], rec["result"]
+    out = [
+        "### BC 학습 (S15P21A103-34)",
+        "",
+        f"**성공률: 미측정.** 여기서 재지 않는다 — `tools/eval_rollout.py --policy-ckpt` 가 잰다.",
+        "",
+        f"- 학습 대상: `{c['trained_on']}`"
+        + ("  ⚠️ **랜덤 텐서다. 루프 검증용이고 수치에 의미가 없다**"
+           if c["trained_on"] == "random_tensors" else ""),
+        f"- 에피소드 {c['n_episodes']} · 샘플 {c['n_samples']} · epochs {c['epochs']} · "
+        f"batch {c['batch_size']} · lr {c['lr']} · loss {c['loss']} · seed {c['seed']}",
+        f"- 파라미터 **{c['n_params']:,}** (~{c['n_params'] * 4 / 1024 / 1024:.1f}MB fp32) · "
+        f"인코더 {c['encoder_mode']} · device {c['device']}",
+        f"- 소요 {r.get('seconds', '?')}초 · 체크포인트 `{r.get('checkpoint', '?')}`",
+    ]
+    if r.get("best_val_loss") is not None:
+        out.append(
+            f"- best val_loss {r['best_val_loss']:.5f} — "
+            "**학습이 망가지지 않았다는 확인일 뿐이다. 성과가 아니다**"
+        )
+    out += ["", f"<sub>{_stamp(rec)}</sub>", ""]
+    return out
+
+
 RENDERERS = {
+    "train_bc": render_train_bc,
     "grasp_check": render_grasp,
     "reach_scan": render_reach,
     "rollout_baselines": render_baselines,
@@ -247,7 +273,8 @@ RENDERERS = {
     "gripper_probe": render_gripper,
 }
 
-ORDER = ["grasp_check", "reach_scan", "rollout_baselines", "verify_dataset", "gripper_probe"]
+ORDER = ["grasp_check", "reach_scan", "rollout_baselines", "train_bc",
+         "verify_dataset", "gripper_probe"]
 
 
 def build_block(runs: dict[str, dict[str, Any]]) -> str:

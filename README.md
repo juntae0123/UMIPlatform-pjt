@@ -211,12 +211,15 @@ AI/
 │   └── isaac/                 검토 대상. 구현 없음 (제약은 __init__.py 참조)
 ├── policy/
 │   ├── base.py                Policy 프로토콜 + uses_privileged_state
-│   └── baselines.py           hold / zero / replay / scripted
+│   ├── baselines.py           hold / zero / replay / scripted
+│   ├── bc.py                  BC 모델 + BCPolicy (체크포인트 → 정책)
+│   └── train_bc.py            학습 루프 (랜덤 텐서 모드 포함)
 ├── eval/
 │   ├── rollout.py             롤아웃 성공률 + GATES + replay 허용오차
 │   └── interface_check.py     시뮬레이터 없는 더미 환경 관통 증명
 ├── data/                      수집·검증 **코드** (데이터셋은 datasets/ 에 있다)
 │   ├── collect.py
+│   ├── dataset.py             torch 데이터셋 (+ 랜덤 텐서 대역)
 │   └── verify.py              데이터셋 전체 계약 게이트
 ├── vlm/                       경량 VLM 파인튜닝 자리. 비어 있음 (이슈 36)
 ├── track_a/                   ★ 트랙 A (현실·기하). 골격만 — 구현 없음
@@ -238,7 +241,7 @@ AI/
 
 | 넣을 것 | 위치 |
 |---|---|
-| 새 학습 정책 (BC/ACT/Diffusion) | `policy/bc.py` 등. `policy/base.py` 의 `Policy` 만 만족시킨다 |
+| 새 학습 정책 (ACT/Diffusion) | `policy/act.py` 등. `policy/base.py` 의 `Policy` 만 만족시킨다 |
 | VLM 파인튜닝 | `vlm/` |
 | 새 평가 지표·게이트 | `eval/` |
 | 두 번째 시뮬레이터 | `sim/<백엔드>/` 에 `sim/base.py` 의 `RobotEnv` 구현 |
@@ -400,6 +403,39 @@ python tools/verify_dataset.py datasets/sim_teleop_v0 --log
 
 ---
 
+### BC 학습 — `tools/train_bc.py`
+
+**랜덤 텐서로 루프를 먼저 완주시킨다.** 실데이터도 GPU 도 필요 없다.
+데이터가 들어왔을 때 루프와 데이터를 동시에 디버깅하는 상황을 피하기 위해서다.
+
+```bash
+pip install -r requirements-train.txt        # torch 는 환경에 맞는 빌드로
+python tools/train_bc.py --random 128 --epochs 3      # 루프 검증
+python tools/train_bc.py --data datasets/sim_teleop_v0 --log
+python tools/eval_rollout.py --policy-ckpt checkpoints/bc/bc.pt --render --log
+```
+
+| | |
+|---|---|
+| 설정 | `configs/train/bc.yaml` (하드웨어 값은 `configs/so101.yaml` 에, 복사하지 않는다) |
+| 모델 | 카메라별 작은 CNN + MLP. **단일 스텝, 청킹 없음** (청킹은 ACT 가 더하는 것) |
+| 파라미터 | **1,307,974** (~5.0MB fp32) — Jetson 예산은 이슈 42 미검증 |
+| 손실 | L1 기본 (`mse` 선택 가능). 체크포인트에 기록된다 |
+
+⚠️ **`train_bc.py` 는 성능을 판정하지 않는다.** 손실만 낸다.
+판정은 `eval_rollout.py --policy-ckpt` 가 하고 **롤아웃 성공률 20.0%** 를 넘어야 한다.
+손실 곡선이 내려간 것은 성과가 아니다.
+
+⚠️ 학습 정책은 baseline 과 **같은 목록·같은 시드**로 채점된다. 단독 수치로 보고하지 않는다.
+
+⚠️ 데이터셋은 로드 시 **에피소드마다 계약 검증**을 한다. 위반이 있으면 학습을 거부한다
+   (실제로 state 범위 위반을 주입해 거부되는 것을 확인했다).
+
+⚠️ 헤드가 선형이라 계약 범위 밖을 예측할 수 있다. `BCPolicy` 가 클립하고
+   **클립 빈도를 센다** — 20% 를 넘으면 행동 분포를 배우지 못한 신호다.
+
+---
+
 ## 8. 측정 수치
 
 <!-- MEASURED:BEGIN — tools/update_readme.py 가 생성한다. 손으로 고치지 마라 -->
@@ -462,6 +498,18 @@ python tools/verify_dataset.py datasets/sim_teleop_v0 --log
 | ±50mm | 0/4 |
 
 <sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `cc950576bde4` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-27T07:19:23+00:00</sub>
+
+### BC 학습 (S15P21A103-34)
+
+**성공률: 미측정.** 여기서 재지 않는다 — `tools/eval_rollout.py --policy-ckpt` 가 잰다.
+
+- 학습 대상: `random_tensors`  ⚠️ **랜덤 텐서다. 루프 검증용이고 수치에 의미가 없다**
+- 에피소드 0 · 샘플 128 · epochs 3 · batch 16 · lr 0.0003 · loss l1 · seed 0
+- 파라미터 **1,307,974** (~5.0MB fp32) · 인코더 separate · device cpu
+- 소요 6.98초 · 체크포인트 `/tmp/work/AI/checkpoints/bc/bc_random.pt`
+- best val_loss 0.50579 — **학습이 망가지지 않았다는 확인일 뿐이다. 성과가 아니다**
+
+<sub>git `없음` (계측이 git 체크아웃 밖에서 돌았다) · code `13e6de545479` · MuJoCo 3.12.0 · Python 3.11.15 · config `d9f997eadd6f` · 2026-08-28T03:33:13+00:00</sub>
 
 ### 데이터 계약 왕복 검증
 
