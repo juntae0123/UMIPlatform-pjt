@@ -41,6 +41,16 @@ STATE_DIM = 6
 ACTION_DIM = 6
 STATE_RANGE = (-1.0, 1.0)
 
+# How far outside STATE_RANGE a value may sit before the episode is rejected.
+# Exposed as a constant because other code has to reason about it: a degree-based
+# control API rounds its joint limits, and whether that rounding can invalidate an
+# episode depends on exactly this number (sim/mujoco/angle_contract.py).
+# STATE_RANGE 를 얼마나 벗어나면 에피소드를 거부하는가. 상수로 노출하는 이유는 다른
+# 코드가 이 값을 근거로 판단해야 하기 때문이다 — degree 기반 제어 API 는 관절 한계를
+# 반올림하는데, 그 반올림이 에피소드를 무효로 만드는지가 정확히 이 값에 달려 있다
+# (sim/mujoco/angle_contract.py).
+RANGE_TOLERANCE = 1e-4
+
 
 @dataclass
 class EpisodeMeta:
@@ -112,7 +122,7 @@ def validate(ep: Episode, *, strict_range: bool = True) -> list[str]:
             problems.append(f"{label} contains NaN or inf")
         elif strict_range:
             lo, hi = float(arr.min()), float(arr.max())
-            if lo < STATE_RANGE[0] - 1e-4 or hi > STATE_RANGE[1] + 1e-4:
+            if lo < STATE_RANGE[0] - RANGE_TOLERANCE or hi > STATE_RANGE[1] + RANGE_TOLERANCE:
                 problems.append(f"{label} out of {STATE_RANGE}: min={lo:.4f} max={hi:.4f}")
 
     for label, ts in (("state_timestamp", ep.state_timestamp), ("action_timestamp", ep.action_timestamp)):
