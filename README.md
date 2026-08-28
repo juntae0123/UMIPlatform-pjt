@@ -291,6 +291,7 @@ python tools/collect_sim.py --episodes 20          # 수집 → datasets/sim_pic
 python tools/verify_dataset.py datasets/sim_pick_v0 --log
 python tools/check_interface.py                    # 시뮬 없는 환경 관통 증명
 python tools/eval_rollout.py --replay-from datasets/sim_pick_v0 --replay-tolerance --log
+python tools/check_angle_contract.py --log        # degree API 가 계약을 깨는가
 python tools/update_readme.py                      # §8 수치 절 재생성
 ```
 
@@ -682,6 +683,10 @@ feat: 정책 학습 루프 (S15P21A103-42, D-AI-7, MEASURE_sync_0827)
 | `docs/TS_mjcf_include_0827.md` | 공식 MJCF 를 수정하지 않고 씬을 만들기까지 |
 | `docs/TS_nonascii_path_0827.md` | 한글 경로로 MuJoCo 가 씬을 못 열던 문제. CRLF 노이즈도 함께 |
 | `docs/DEVLOG_0827.md` | 데일리 회고 (KPT). 무엇을 왜 그렇게 판단했나 |
+| `docs/MEASURE_hw_angles_0828.md` | degree 기반 제어 API 가 계약을 깨는가. 오차 주범 분리 |
+| `docs/REVIEW_hw_runtime_0828.md` | HW 블록 명령 런타임 리뷰. 씬 통합·`type:policy` 블록 제안 |
+| `docs/PROPOSAL_schema_api_0828.md` | BE 저장·배포 계약 제안 (DB 스키마·API·VLM 파생 샘플) |
+| `docs/DECISIONS_0828_draft.md` | 결정 초안 D-AI-8~10. 되돌릴 조건 포함 |
 
 각 MEASURE 문서에는 **정정 절**이 있다. 계측 자체의 결함으로 이전 수치가 낙관적으로
 편향돼 있던 경우를 그 자리에 남긴다 — 지우고 새 수치만 쓰면 같은 실수를 또 한다.
