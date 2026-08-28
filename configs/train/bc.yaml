@@ -1,0 +1,48 @@
+# BC (Behavior Cloning) 학습 설정
+#
+# ⚠️ 이 파일은 학습 하이퍼파라미터다. 하드웨어 값은 configs/so101.yaml 에 있고
+#    거기 있는 것을 여기에 복사하지 않는다.
+#
+# ⚠️ 통과 기준은 validation loss 가 아니라 롤아웃 성공률이다.
+#    게이트: 학습 정책 성공률 > 20.0% (eval/rollout.py 의 GATES)
+
+model:
+  # 카메라별 인코더를 따로 둘지 공유할지.
+  # separate: 정면·손목은 시야 통계가 달라 표준적으로 분리한다 (ACT/Diffusion Policy)
+  # shared:   파라미터 절반. Jetson 8GB 제약이 빡빡해지면 여기서 줄인다
+  encoder_mode: separate      # separate | shared
+  encoder_channels: [32, 64, 128, 256]   # 작은 CNN. 스트라이드 2씩 4단계
+  feature_dim: 256            # 카메라당 인코더 출력 차원
+  hidden_dims: [512, 256]     # 결합 후 MLP
+  dropout: 0.1
+  use_state: true             # 관절 state(6) 를 입력에 넣는다
+
+train:
+  batch_size: 32
+  epochs: 20
+  lr: 0.0003
+  weight_decay: 0.0001
+  # L1 은 이상치에 덜 흔들려 모방학습에서 관례적으로 쓴다 (ACT 도 L1).
+  # mse 로 바꿔가며 재보려면 여기만 고친다.
+  loss: l1                    # l1 | mse
+  val_fraction: 0.2
+  seed: 0
+  grad_clip: 1.0
+  num_workers: 0              # 윈도우/작은 데이터셋에서는 0 이 안전하다
+  amp: false                  # GPU 에서 켤 것. CPU 에선 의미 없다
+
+data:
+  # 이미지 정규화. uint8 [0,255] -> float [0,1] -> (x - mean) / std
+  # ImageNet 통계가 아니라 단순 0.5 다. 사전학습 가중치를 쓰기 시작하면
+  # 그때 해당 통계로 바꾸고 D-AI 기록을 남긴다.
+  image_mean: 0.5
+  image_std: 0.5
+  # 증강은 아직 없다. 넣기 전에 무엇을 위한 증강인지 먼저 정한다 —
+  # 조명·배경 변주는 시뮬 씬에서 만드는 편이 낫고, 크롭·색변환은
+  # 카메라 캘리브레이션 가정을 깨뜨릴 수 있다.
+  augment: false
+
+checkpoint:
+  dir: checkpoints/bc
+  save_best_on: val_loss      # ⚠️ "best" 는 학습이 안 망가졌다는 뜻일 뿐이다.
+                              #    성능 판정은 tools/eval_rollout.py 가 한다
