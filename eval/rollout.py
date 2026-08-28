@@ -156,10 +156,28 @@ def replay_tolerance(
     }
 
 
-def build_policies(env: MujocoPickEnv, replay_from: Path | None) -> list[Policy]:
+def build_policies(
+    env: MujocoPickEnv, replay_from: Path | None, policy_ckpt: Path | None = None
+) -> list[Policy]:
     """Assemble the baseline set, skipping replay if no episode is available.
-    baseline 묶음을 만든다. 재생할 에피소드가 없으면 replay 는 건너뛴다."""
+    baseline 묶음을 만든다. 재생할 에피소드가 없으면 replay 는 건너뛴다.
+
+    A learned checkpoint joins the same list, so it is scored under exactly the
+    same seeds and conditions as the baselines. A learned policy's number
+    reported on its own, without the baselines beside it, means nothing.
+    학습 체크포인트는 같은 목록에 들어간다. 그래야 baseline 과 **정확히 같은**
+    시드·조건으로 채점된다. 학습 정책 수치를 baseline 없이 단독으로 보고하는 것은
+    아무 의미가 없다.
+    """
     policies: list[Policy] = [HoldPolicy(), ZeroPolicy(), ScriptedPickPolicy(env)]
+    if policy_ckpt is not None:
+        from policy.bc import BCPolicy
+
+        bc = BCPolicy(policy_ckpt)
+        print(f"학습 정책 로드: {bc.describe()}")
+        if bc.meta.get("trained_on") == "random_tensors":
+            print("⚠️ 이 체크포인트는 **랜덤 텐서로 학습**된 것이다. 평가 결과에 의미가 없다.")
+        policies.append(bc)
     if replay_from is not None:
         episodes = sorted(replay_from.glob("*.npz"))
         if not episodes:
@@ -179,6 +197,8 @@ def main() -> None:
                         help="dataset dir to take the replay trajectory from")
     parser.add_argument("--replay-tolerance", action="store_true",
                         help="also measure how far the object may move before replay fails")
+    parser.add_argument("--policy-ckpt", type=Path, default=None,
+                        help="학습 정책 체크포인트. baseline 과 같은 조건으로 함께 채점한다")
     parser.add_argument("--render", action="store_true",
                         help="render observations; needed only for vision policies")
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
@@ -198,7 +218,7 @@ def main() -> None:
     privileged: dict[str, bool] = {}
 
     with MujocoPickEnv(cfg, render=args.render, object_jitter_m=args.jitter) as env:
-        for policy in build_policies(env, args.replay_from):
+        for policy in build_policies(env, args.replay_from, args.policy_ckpt):
             rate, results = evaluate(env, policy, seeds)
             rates[policy.name] = rate
             privileged[policy.name] = policy.uses_privileged_state
@@ -237,8 +257,18 @@ def main() -> None:
         print(f"  [ceiling]       scripted {rates['scripted'] * 100:.1f}% >= 80% → "
               f"{'통과' if ok else '실패 — 태스크/씬 문제이지 정책 문제가 아니다'}")
     floor = max(rates.get("hold", 0.0), rates.get("zero", 0.0))
-    print(f"  [floor/chance]  학습 정책은 {floor * 100 + 20:.1f}% 를 넘어야 의미가 있다 "
-          f"(hold {rates.get('hold', 0) * 100:.1f}%, zero {rates.get('zero', 0) * 100:.1f}%)")
+    threshold = floor + 0.20
+    if "bc" in rates:
+        ok = rates["bc"] > threshold
+        print(f"  [floor/chance]  bc {rates['bc'] * 100:.1f}% > {threshold * 100:.1f}% → "
+              f"{'통과' if ok else '**실패 — baseline 대비 의미 있는 차이가 아니다**'}")
+        if "scripted" in rates and rates["scripted"] > 0:
+            gap = rates["scripted"] - rates["bc"]
+            print(f"                  상한(scripted) 대비 {gap * 100:.1f}%p 아래 — "
+                  f"이미지로 위치를 추정하는 데 드는 비용이다")
+    else:
+        print(f"  [floor/chance]  학습 정책은 {threshold * 100:.1f}% 를 넘어야 의미가 있다 "
+              f"(hold {rates.get('hold', 0) * 100:.1f}%, zero {rates.get('zero', 0) * 100:.1f}%)")
 
     if args.log:
         rec = log_run(
