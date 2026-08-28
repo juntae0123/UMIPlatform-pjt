@@ -633,6 +633,7 @@ feat: 정책 학습 루프 (S15P21A103-42, D-AI-7, MEASURE_sync_0827)
 | `docs/TS_measurement_defects_0827.md` | 내 계측기 결함 5건. **전부 낙관적 방향이었다** |
 | `docs/TS_mjcf_include_0827.md` | 공식 MJCF 를 수정하지 않고 씬을 만들기까지 |
 | `docs/TS_nonascii_path_0827.md` | 한글 경로로 MuJoCo 가 씬을 못 열던 문제. CRLF 노이즈도 함께 |
+| `docs/DEVLOG_0827.md` | 데일리 회고 (KPT). 무엇을 왜 그렇게 판단했나 |
 
 각 MEASURE 문서에는 **정정 절**이 있다. 계측 자체의 결함으로 이전 수치가 낙관적으로
 편향돼 있던 경우를 그 자리에 남긴다 — 지우고 새 수치만 쓰면 같은 실수를 또 한다.
