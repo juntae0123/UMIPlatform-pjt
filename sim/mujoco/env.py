@@ -24,6 +24,7 @@ import numpy as np
 
 from sim.base import Observation, RobotEnv  # noqa: F401 — 재수출: 하위 호환용 아님, 타입 참조용
 from sim.mujoco.build_scene import build_model, denormalize, load_config, normalize
+from sim.mujoco.domain import DomainRandomizer
 
 
 class MujocoPickEnv:
@@ -49,6 +50,7 @@ class MujocoPickEnv:
         render: bool = True,
         object_jitter_m: float = 0.05,
         max_ticks: int = 200,
+        domain: DomainRandomizer | None = None,
     ) -> None:
         self.cfg = cfg if cfg is not None else load_config()
         self.model = build_model(self.cfg)
@@ -56,6 +58,13 @@ class MujocoPickEnv:
         self._render = render
         self._jitter = float(object_jitter_m)
         self.max_ticks = int(max_ticks)
+        # Bound once against the compiled model, re-applied every reset. None
+        # means the nominal model, which is condition A of the transfer measure.
+        # 컴파일된 모델에 한 번 결속하고 리셋마다 다시 적용한다. None 이면
+        # 공칭 모델이고, 그것이 전이 계측의 조건 A 다.
+        self._domain = domain
+        if self._domain is not None:
+            self._domain.bind(self.model)
 
         self._width, self._height = self.cfg["cameras"]["resolution"]
         self._rate = float(self.cfg["control"]["rate_hz"])
@@ -114,6 +123,8 @@ class MujocoPickEnv:
         0% 는 태스크에 대해 아무것도 말해주지 않는다. 물체가 움직였다는 것만 말해준다.
         """
         mujoco.mj_resetData(self.model, self.data)
+        if self._domain is not None:
+            self._domain.apply(self.model, self.data, seed=seed)
         rng = np.random.default_rng(seed)
         xy = (
             np.asarray(object_xy, dtype=float)
