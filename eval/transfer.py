@@ -187,12 +187,19 @@ def measure(
     render: bool,
     jitter: float,
     with_scripted: bool = True,
-) -> tuple[list[TransferRow], dict[str, Any]]:
+) -> tuple[list[TransferRow], dict[str, Any], dict[str, Any]]:
     """Score every policy under condition A, then the same ones under B.
     정책 전부를 조건 A 에서 채점하고, 같은 것들을 조건 B 에서 채점한다."""
     rates: dict[str, dict[str, float]] = {}
     privileged: dict[str, bool] = {}
     domain_info: dict[str, Any] = {}
+    # Per-trial rows are kept because the aggregate cannot answer "where does it
+    # succeed". Re-running a 100-episode rendered sweep to recover a field we
+    # already had in memory is the expensive kind of mistake.
+    # 시행별 기록을 남긴다. 집계값은 "어디서 성공하는가"에 답하지 못한다. 이미
+    # 메모리에 있던 값을 되찾겠다고 100편짜리 렌더 스윕을 다시 도는 것이 비싼
+    # 종류의 실수다.
+    detail: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
     for key in ("A", "B"):
         spec = PRESETS[key]
@@ -201,9 +208,10 @@ def measure(
             randomiser.bind(env.model)
             domain_info[key] = randomiser.describe()
             for policy in _policies(env, policy_ckpt, with_scripted=with_scripted):
-                rate, _ = evaluate(env, policy, seeds)
+                rate, results = evaluate(env, policy, seeds)
                 rates.setdefault(policy.name, {})[key] = rate
                 privileged[policy.name] = policy.uses_privileged_state
+                detail.setdefault(policy.name, {})[key] = [r.__dict__ for r in results]
                 print(f"  [{key}] {policy.name:10s} {rate * 100:5.1f}%")
 
     rows = [
@@ -215,7 +223,7 @@ def measure(
         )
         for name, v in rates.items()
     ]
-    return rows, domain_info
+    return rows, domain_info, detail
 
 
 def format_table(rows: list[TransferRow], n_episodes: int) -> str:
@@ -285,7 +293,7 @@ def main() -> int:
         print(f"  [{key}] {text}")
     print()
 
-    rows, domain_info = measure(
+    rows, domain_info, detail = measure(
         cfg,
         seeds,
         policy_ckpt=args.policy_ckpt,
@@ -338,6 +346,7 @@ def main() -> int:
                 "limitation": "시뮬 내부 A→B 는 실제 sim2real 갭의 하한이다",
             },
             result={
+                "detail": detail,
                 "rows": [
                     {
                         "policy": r.policy,
