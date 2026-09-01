@@ -30,15 +30,32 @@ python tools/check_domain.py
 
 echo
 echo "[1/5] 조건 A 수집 (도메인 랜덤화 OFF)"
-if [ -d "${DATASET}" ] && [ -n "$(ls -A "${DATASET}"/*.npz 2>/dev/null)" ]; then
-  echo "  이미 있음 — 건너뜀 (${DATASET})"
+# Counting before deciding, because a half-finished collection is the dangerous
+# case: silently reusing it trains on fewer episodes than the run claims, and
+# nothing downstream would say so.
+# 세기 전에 판단하지 않는다. 중단된 수집분이 위험한 경우다 — 조용히 재사용하면
+# 실행이 주장하는 것보다 적은 편수로 학습하게 되고, 하류 어디서도 그 사실이
+# 드러나지 않는다.
+shopt -s nullglob
+EXISTING=("${DATASET}"/*.npz)
+shopt -u nullglob
+N_HAVE=${#EXISTING[@]}
+
+if [ "${N_HAVE}" -ge "${N_COLLECT}" ]; then
+  echo "  기존 ${N_HAVE}편 재사용 (요청 ${N_COLLECT}편)"
+elif [ "${N_HAVE}" -gt 0 ]; then
+  echo "  ✗ ${DATASET} 에 ${N_HAVE}편만 있다. 요청은 ${N_COLLECT}편이다."
+  echo "    중단된 수집분일 수 있고, 이어붙이면 어떤 조건으로 몇 편을 모았는지"
+  echo "    알 수 없게 된다. 지우고 다시 받거나 다른 --out 이름을 쓸 것:"
+  echo "      rm -rf ${DATASET}"
+  exit 1
 else
   python tools/collect_sim.py --episodes "${N_COLLECT}" --jitter 0.05 --out "${DATASET}" --log
 fi
 
 echo
 echo "[2/5] 계약 검증 — 위반이 하나라도 있으면 학습하지 않는다"
-python tools/verify_dataset.py --dataset "${DATASET}" --log
+python tools/verify_dataset.py "${DATASET}" --write-index --log
 
 echo
 echo "[3/5] BC 실데이터 학습 (첫 실학습. 이전 ckpt 는 random_tensors 였다)"
