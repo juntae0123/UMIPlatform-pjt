@@ -1,5 +1,5 @@
 """CLI entry point for `eval.diagnose_bc`.
-`eval.diagnose_bc` 의 CLI 진입점. AI/ 에서 실행한다.
+`eval.diagnose_bc` 의 CLI 진입점. AI/ 디렉터리에서 실행한다.
 """
 
 import sys
