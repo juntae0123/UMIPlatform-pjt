@@ -66,6 +66,29 @@ GATES: dict[str, str] = {
 }
 
 
+def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson interval for a success rate.
+    성공률의 95% Wilson 신뢰구간.
+
+    A rate reported without an interval invites reading a 5-percentage-point
+    difference as a finding. At n=20 the interval is roughly ±20 points, and
+    this run already shows why: the same scripted policy scored 95% on one seed
+    block and 70% on another. The interval is what stops that from becoming a
+    conclusion.
+    구간 없이 성공률만 보고하면 5%p 차이를 발견으로 읽게 된다. n=20 에서 구간은
+    대략 ±20%p 이고, 이번 실행이 그 이유를 이미 보여줬다 — 같은 스크립트 정책이
+    한 시드 블록에서 95%, 다른 블록에서 70% 였다. 구간은 그것이 결론이 되는 것을
+    막는다.
+    """
+    if n <= 0:
+        return (0.0, 0.0)
+    p = successes / n
+    d = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / d
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
 @dataclass
 class TransferRow:
     """One policy's result across both domain conditions.
@@ -86,8 +109,24 @@ class TransferRow:
 
     def verdict(self) -> str:
         """Judgement against the gates fixed above.
-        위에 고정된 게이트에 대한 판정."""
+        위에 고정된 게이트에 대한 판정.
+
+        The adopt/reject gates are about a LEARNED policy's transfer. A scripted
+        policy reads privileged state, so its collapse says something about the
+        physics of the scene and nothing about whether sim pretraining is worth
+        doing. Printing "S3 시도 가치 있음" beside it invites exactly the wrong
+        reading, so privileged policies get no adoption verdict at all.
+        채택/기각 게이트는 **학습 정책**의 전이에 관한 것이다. 스크립트 정책은
+        특권 정보를 읽으므로 그 붕괴는 씬의 물리에 대해 말할 뿐, 시뮬 사전학습이
+        값어치가 있는지에 대해서는 아무 말도 하지 않는다. 옆에 "S3 시도 가치
+        있음"을 찍으면 정확히 틀린 독해를 부른다. 그래서 특권 정책에는 채택
+        판정을 아예 붙이지 않는다.
+        """
         c = self.collapse
+        if self.uses_privileged_state:
+            if c is None:
+                return "참고용 — 특권 정보 정책, 채택 판정 대상 아님"
+            return f"참고용 (물리 외란 민감도 {c:+.3f}) — 채택 판정 대상 아님"
         if c is None:
             return f"무효 — 조건 A 성공률 {self.rate_a:.0%} < {MIN_A_RATE:.0%}"
         if c <= ADOPT_BELOW:
@@ -169,20 +208,28 @@ def measure(
     return rows, domain_info
 
 
-def format_table(rows: list[TransferRow]) -> str:
+def format_table(rows: list[TransferRow], n_episodes: int) -> str:
     """The table that goes into the MEASURE document verbatim.
     MEASURE 문서에 그대로 들어갈 표."""
-    head = f"{'정책':12s} {'조건 A':>8s} {'조건 B':>8s} {'붕괴율':>9s}  판정"
-    lines = [head, "-" * 66]
+    head = f"{'정책':12s} {'조건 A (95% CI)':>22s} {'조건 B (95% CI)':>22s} {'붕괴율':>9s}  판정"
+    lines = [head, "-" * 100]
     for r in rows:
         c = r.collapse
         c_txt = "  —" if c is None else f"{c:+.3f}"
         mark = " *" if r.uses_privileged_state else "  "
+        a_lo, a_hi = wilson_ci(round(r.rate_a * n_episodes), n_episodes)
+        b_lo, b_hi = wilson_ci(round(r.rate_b * n_episodes), n_episodes)
         lines.append(
-            f"{r.policy:12s}{mark} {r.rate_a * 100:6.1f}% {r.rate_b * 100:6.1f}% "
+            f"{r.policy:12s}{mark} "
+            f"{r.rate_a * 100:5.1f}% [{a_lo * 100:4.1f}~{a_hi * 100:5.1f}] "
+            f"{r.rate_b * 100:5.1f}% [{b_lo * 100:4.1f}~{b_hi * 100:5.1f}] "
             f"{c_txt:>9s}  {r.verdict()}"
         )
     lines.append("* 특권 정보 사용 — 이미지를 보지 않으므로 물리 외란만 반영된다")
+    lines.append(
+        f"구간은 95% Wilson. n={n_episodes} 에서는 넓다 — 겹치는 두 값의 차이는 "
+        "발견이 아니다."
+    )
     return "\n".join(lines)
 
 
@@ -229,7 +276,7 @@ def main() -> int:
     )
 
     print()
-    print(format_table(rows))
+    print(format_table(rows, args.episodes))
     print()
     print(
         f"조건: 물체 xy ±{args.jitter * 1000:.0f}mm, 시드 {seeds[0]}~{seeds[-1]}, "
