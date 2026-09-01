@@ -30,30 +30,39 @@ python tools/check_domain.py
 
 echo
 echo "[1/5] 조건 A 수집 (도메인 랜덤화 OFF)"
-# Counting before deciding, because a half-finished collection is the dangerous
-# case: silently reusing it trains on fewer episodes than the run claims, and
-# nothing downstream would say so.
-# 세기 전에 판단하지 않는다. 중단된 수집분이 위험한 경우다 — 조용히 재사용하면
-# 실행이 주장하는 것보다 적은 편수로 학습하게 되고, 하류 어디서도 그 사실이
-# 드러나지 않는다.
+# collect writes dataset.json only after the whole loop finishes, so its presence
+# is the completion marker — not the episode count. A run of 100 legitimately
+# yields fewer files because unreachable placements are dropped; judging by count
+# would reject a perfectly good dataset. Loose .npz files with no index, on the
+# other hand, mean the collection died partway, and reusing those trains on an
+# unknown number of episodes under unrecorded conditions.
+# collect 는 루프가 전부 끝난 뒤에만 dataset.json 을 쓴다. 따라서 완료 판정 기준은
+# 편수가 아니라 인덱스 파일의 존재다. 100편 요청이 그보다 적은 파일을 남기는 것은
+# 정상이다 — 도달 불가 배치는 버려진다. 편수로 판정하면 멀쩡한 데이터셋을 거부한다.
+# 반대로 인덱스 없이 .npz 만 굴러다니면 수집이 도중에 죽은 것이고, 그걸 재사용하면
+# 기록되지 않은 조건에서 몇 편인지 모르는 채로 학습하게 된다.
 shopt -s nullglob
 EXISTING=("${DATASET}"/*.npz)
 shopt -u nullglob
 N_HAVE=${#EXISTING[@]}
 
-if [ "${N_HAVE}" -ge "${N_COLLECT}" ]; then
-  echo "  기존 ${N_HAVE}편 재사용 (요청 ${N_COLLECT}편)"
+if [ -f "${DATASET}/dataset.json" ]; then
+  N_INDEX=$(python -c "import json,sys; print(len(json.load(open(sys.argv[1],encoding='utf-8'))['episodes']))" "${DATASET}/dataset.json")
+  if [ "${N_HAVE}" -ne "${N_INDEX}" ]; then
+    echo "  ✗ 인덱스는 ${N_INDEX}편인데 실제 파일은 ${N_HAVE}편이다."
+    echo "    수집 이후 파일이 추가·삭제됐다. 무엇으로 학습했는지 귀속이 불가능하다."
+    exit 1
+  fi
+  echo "  완료본 재사용 — ${N_HAVE}편 (인덱스 일치)"
 elif [ "${N_HAVE}" -gt 0 ]; then
-  echo "  ✗ ${DATASET} 에 ${N_HAVE}편만 있다. 요청은 ${N_COLLECT}편이다."
-  echo "    중단된 수집분일 수 있고, 이어붙이면 어떤 조건으로 몇 편을 모았는지"
-  echo "    알 수 없게 된다. 지우고 다시 받거나 다른 --out 이름을 쓸 것:"
+  echo "  ✗ ${DATASET} 에 .npz ${N_HAVE}편이 있는데 dataset.json 이 없다."
+  echo "    수집이 도중에 중단된 것이다. 지우고 다시 받을 것:"
   echo "      rm -rf ${DATASET}"
   exit 1
 else
   python tools/collect_sim.py --episodes "${N_COLLECT}" --jitter 0.05 --out "${DATASET}" --log
 fi
 
-echo
 echo "[2/5] 계약 검증 — 위반이 하나라도 있으면 학습하지 않는다"
 python tools/verify_dataset.py "${DATASET}" --write-index --log
 
