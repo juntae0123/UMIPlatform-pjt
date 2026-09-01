@@ -144,7 +144,9 @@ def _make_env(cfg: dict[str, Any], spec: DomainSpec, *, render: bool, jitter: fl
     )
 
 
-def _policies(env: MujocoPickEnv, policy_ckpt: Path | None) -> list[Policy]:
+def _policies(
+    env: MujocoPickEnv, policy_ckpt: Path | None, *, with_scripted: bool = True
+) -> list[Policy]:
     """Scripted always, plus the learned checkpoint when one is given.
     스크립트는 항상, 학습 체크포인트는 주어졌을 때.
 
@@ -155,7 +157,14 @@ def _policies(env: MujocoPickEnv, policy_ckpt: Path | None) -> list[Policy]:
     않으므로 조건 B 에서 잃는 것은 전부 마찰과 질량 탓이다. 시각 정책은 거기에
     인식까지 더해 잃는다.
     """
-    out: list[Policy] = [ScriptedPickPolicy(env)]
+    # Two runs have now shown scripted scoring identically under A and B
+    # (70.0% both times): its failures are IK-unreachable placements, which the
+    # physics perturbation cannot touch. It is a dead probe here, and it costs
+    # half the render time, so it can be dropped once that is established.
+    # 두 번의 실행에서 scripted 가 A/B 동일 점수(둘 다 70.0%)를 냈다. 그 실패는
+    # IK 도달 불가 배치이고 물리 외란이 건드릴 수 없는 종류다. 여기서는 죽은
+    # 프로브이고 렌더 시간의 절반을 먹으므로, 확인된 이상 뺄 수 있다.
+    out: list[Policy] = [ScriptedPickPolicy(env)] if with_scripted else []
     if policy_ckpt is not None:
         from policy.bc import BCPolicy
 
@@ -177,6 +186,7 @@ def measure(
     policy_ckpt: Path | None,
     render: bool,
     jitter: float,
+    with_scripted: bool = True,
 ) -> tuple[list[TransferRow], dict[str, Any]]:
     """Score every policy under condition A, then the same ones under B.
     정책 전부를 조건 A 에서 채점하고, 같은 것들을 조건 B 에서 채점한다."""
@@ -190,7 +200,7 @@ def measure(
             randomiser = DomainRandomizer(spec)
             randomiser.bind(env.model)
             domain_info[key] = randomiser.describe()
-            for policy in _policies(env, policy_ckpt):
+            for policy in _policies(env, policy_ckpt, with_scripted=with_scripted):
                 rate, _ = evaluate(env, policy, seeds)
                 rates.setdefault(policy.name, {})[key] = rate
                 privileged[policy.name] = policy.uses_privileged_state
@@ -244,9 +254,17 @@ def main() -> int:
         action="store_true",
         help="관측 렌더링. 시각 정책을 채점하려면 반드시 켜야 한다",
     )
+    parser.add_argument(
+        "--skip-scripted",
+        action="store_true",
+        help="scripted 기준선을 빼고 학습 정책만 잰다. 렌더 시간이 절반이 된다",
+    )
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
     parser.add_argument("--log", action="store_true")
     args = parser.parse_args()
+
+    if args.skip_scripted and args.policy_ckpt is None:
+        raise SystemExit("--skip-scripted 는 --policy-ckpt 와 함께 써야 한다. 잴 정책이 없다.")
 
     # Without rendering the observation images are zeros, so every appearance
     # perturbation has exactly zero effect and the number would look reassuring
@@ -273,6 +291,7 @@ def main() -> int:
         policy_ckpt=args.policy_ckpt,
         render=args.render,
         jitter=args.jitter,
+        with_scripted=not args.skip_scripted,
     )
 
     print()
@@ -312,6 +331,7 @@ def main() -> int:
                 "render": args.render,
                 "config_sha": file_digest(DEFAULT_CONFIG),
                 "policy_ckpt": str(args.policy_ckpt) if args.policy_ckpt else None,
+                "with_scripted": not args.skip_scripted,
                 "domain": domain_info,
                 "gates": GATES,
                 "metric": "붕괴율 = 1 - (조건B 성공률 / 조건A 성공률)",
