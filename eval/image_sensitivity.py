@@ -68,6 +68,21 @@ class Sensitivity:
     per_joint_image: list[float]
     per_joint_state: list[float]
     per_joint_gt: list[float]
+    # The same between-episode difference, but of the residual `action - state`.
+    # 같은 에피소드 간 차이를, 잔차 `action - state` 에 대해 잰 것.
+    #
+    # This is the number that decides whether a delta action target helps. With an
+    # absolute target, the between-episode difference in `action` equals the
+    # difference in `state` -- the object moved, so the arm is elsewhere, and that
+    # displacement IS the answer. The network reads it off the state and the image
+    # has nothing left to explain. Subtracting the state removes exactly that
+    # shortcut, and what remains is what vision would have to supply.
+    # 델타 행동 목표가 도움이 되는지를 결정하는 수치다. 절대 목표에서는 에피소드 간
+    # `action` 차이가 곧 `state` 차이다. 물체가 옮겨졌으니 팔도 다른 곳에 있고, 그
+    # 변위가 곧 답이다. 신경망은 그걸 상태에서 읽으면 되고 이미지가 설명할 몫은 남지
+    # 않는다. 상태를 빼면 정확히 그 지름길이 사라지고, 남는 것이 시각이 공급해야 할
+    # 몫이다.
+    per_joint_gt_delta: list[float]
     n_pairs: int
     n_timesteps: int
 
@@ -81,6 +96,20 @@ class Sensitivity:
         img = float(np.mean(self.per_joint_image))
         gt = float(np.mean(self.per_joint_gt))
         return img / gt if gt > 1e-12 else float("nan")
+
+    def delta_ratio(self) -> float:
+        """Image contribution measured against the residual, not the absolute target.
+        절대 목표가 아니라 잔차를 기준으로 잰 이미지 기여도."""
+        img = float(np.mean(self.per_joint_image))
+        gt = float(np.mean(self.per_joint_gt_delta))
+        return img / gt if gt > 1e-12 else float("nan")
+
+    def state_explains(self) -> float:
+        """How much of the absolute target the state alone accounts for.
+        절대 목표 중 상태만으로 설명되는 몫."""
+        st = float(np.mean(self.per_joint_state))
+        gt = float(np.mean(self.per_joint_gt))
+        return st / gt if gt > 1e-12 else float("nan")
 
     def passed(self) -> bool:
         return self.overall_ratio() >= GATE_IMAGE_RATIO
@@ -116,6 +145,7 @@ def measure(
     d_image: list[np.ndarray] = []
     d_state: list[np.ndarray] = []
     d_gt: list[np.ndarray] = []
+    d_gt_delta: list[np.ndarray] = []
 
     for t in steps:
         for i in range(len(eps)):
@@ -140,11 +170,17 @@ def measure(
                 d_image.append(np.abs(swap_img - base))
                 d_state.append(np.abs(swap_state - base))
                 d_gt.append(np.abs(ej.action[t] - ei.action[t]))
+                d_gt_delta.append(
+                    np.abs(
+                        (ej.action[t] - ej.state[t]) - (ei.action[t] - ei.state[t])
+                    )
+                )
 
     return Sensitivity(
         per_joint_image=[float(v) for v in np.mean(d_image, axis=0)],
         per_joint_state=[float(v) for v in np.mean(d_state, axis=0)],
         per_joint_gt=[float(v) for v in np.mean(d_gt, axis=0)],
+        per_joint_gt_delta=[float(v) for v in np.mean(d_gt_delta, axis=0)],
         n_pairs=len(d_image),
         n_timesteps=len(steps),
     )
@@ -153,20 +189,23 @@ def measure(
 def format_report(s: Sensitivity, cfg: dict[str, Any]) -> str:
     names = [j.name for j in joint_specs(cfg)]
     lines = [
-        f"{'관절':15s} {'이미지 교체':>12s} {'상태 교체':>12s} {'정답 차이':>12s} {'이미지/정답':>12s}",
-        "-" * 68,
+        f"{'관절':15s} {'이미지 교체':>12s} {'상태 교체':>12s} {'정답 차이':>12s} "
+        f"{'이미지/정답':>12s} {'정답 델타차':>12s} {'이미지/델타':>12s}",
+        "-" * 96,
     ]
     for i, jn in enumerate(names):
-        r = s.ratio()[i]
+        gtd = s.per_joint_gt_delta[i]
+        rd = s.per_joint_image[i] / gtd if gtd > 1e-12 else float("nan")
         lines.append(
             f"{jn:15s} {s.per_joint_image[i]:12.6f} {s.per_joint_state[i]:12.6f} "
-            f"{s.per_joint_gt[i]:12.6f} {r:12.3f}"
+            f"{s.per_joint_gt[i]:12.6f} {s.ratio()[i]:12.3f} {gtd:12.6f} {rd:12.3f}"
         )
-    lines.append("-" * 68)
+    lines.append("-" * 96)
     lines.append(
         f"{'전체':15s} {np.mean(s.per_joint_image):12.6f} "
         f"{np.mean(s.per_joint_state):12.6f} {np.mean(s.per_joint_gt):12.6f} "
-        f"{s.overall_ratio():12.3f}"
+        f"{s.overall_ratio():12.3f} {np.mean(s.per_joint_gt_delta):12.6f} "
+        f"{s.delta_ratio():12.3f}"
     )
     return "\n".join(lines)
 
@@ -204,18 +243,42 @@ def main() -> int:
         f"{'통과' if s.passed() else '**실패**'}"
     )
     print()
+    dr = s.delta_ratio()
+    se = s.state_explains()
+    print(f"  [참고] 상태만으로 설명되는 절대 목표의 몫: {se:.3f}")
+    print(f"  [참고] 잔차(action-state) 기준 이미지 기여도: {dr:.3f}")
+    print()
+
     if s.passed():
         print(
             "정책이 이미지에 반응한다. 0% 의 원인은 '안 본다'가 아니라 '부정확하다'이므로 "
             "행동 표현(델타)·손실 가중이 유효한 대책이다."
         )
     else:
-        print(
-            "정책이 이미지를 사실상 무시한다. 관절각만의 함수에 가깝고, 그래서 물체가 "
-            "움직이면 찾지 못한다. **델타 행동으로는 고쳐지지 않는다** — 인코더가 학습에 "
-            "기여하는지(그래디언트·특징 붕괴), 상태 입력이 답을 지름길로 주고 있는지를 "
-            "먼저 봐야 한다."
-        )
+        print("정책이 절대 목표를 이미지 없이 설명하고 있다. 왜 그런지는 위 두 참고값이 가른다.")
+        if se >= 0.80:
+            print(
+                f"  · 상태만으로 절대 목표의 {se:.0%} 가 설명된다. 인코더가 죽은 것이 아니라 "
+                "**상태가 답을 지름길로 주고 있어 이미지를 볼 이유가 없었던 것**이다. "
+                "물체가 옮겨지면 팔도 다른 곳에 있고, 그 변위가 곧 정답 차이다."
+            )
+        if not np.isnan(dr):
+            if dr >= 0.30:
+                print(
+                    f"  · 잔차 기준으로는 이미지 기여도가 {dr:.3f} 다. **델타 행동 목표로 "
+                    "바꾸면 지름길이 사라지고 이미지가 설명해야 할 몫이 드러난다** — "
+                    "델타 행동만으로 유효할 가능성이 높다."
+                )
+            elif dr >= 0.10:
+                print(
+                    f"  · 잔차 기준 이미지 기여도 {dr:.3f} — 부분적이다. 델타 행동과 함께 "
+                    "상태 입력을 약화(드롭아웃)하는 것을 같이 재야 한다."
+                )
+            else:
+                print(
+                    f"  · 잔차 기준으로도 이미지 기여도가 {dr:.3f} 로 낮다. 델타 행동만으로는 "
+                    "부족하다. 인코더가 그래디언트를 받고 있는지부터 확인해야 한다."
+                )
     print(
         "\n⚠️ 교체된 (이미지, 상태) 쌍은 함께 나타난 적 없는 조합이다. 절대값이 아니라 "
         "비율만 읽어라."
@@ -242,6 +305,9 @@ def main() -> int:
                 "per_joint_gt": s.per_joint_gt,
                 "ratio_per_joint": s.ratio(),
                 "overall_ratio": ratio,
+                "per_joint_gt_delta": s.per_joint_gt_delta,
+                "delta_ratio": s.delta_ratio(),
+                "state_explains": s.state_explains(),
                 "passed": s.passed(),
                 "n_pairs": s.n_pairs,
                 "n_timesteps": s.n_timesteps,
