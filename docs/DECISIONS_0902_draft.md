@@ -256,6 +256,9 @@ chore/ai/S15P21A103-NNN-repo-tooling
 - 저장소 잡일(README, push 스크립트, .gitignore)은 **잡일 전용 이슈 하나**로 모은다.
   이슈키 없는 커밋 4건이 나온 것은 붙일 이슈가 없어서였다
 - `ai → dev` 병합은 GitLab MR 로 한다. 로컬 병합 후 push 하면 이력이 남지 않는다
+- **MR 링크에 대상 브랜치를 반드시 넣는다.** 빠뜨리면 GitLab 이 기본 브랜치(`master`)를
+  대상으로 채워서 `ai` 가 `dev` 를 건너뛰고 올라간다:
+  `?merge_request[source_branch]=ai&merge_request[target_branch]=dev`
 
 **왜 커밋 단위가 아니라 주제 단위인가**
 

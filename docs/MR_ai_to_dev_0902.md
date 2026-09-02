@@ -1,7 +1,14 @@
 # MR 본문 — `ai` → `dev` (2026-09-02)
 
 > GitLab MR 생성 시 아래 본문을 그대로 붙여넣는다.
-> 링크: `/-/merge_requests/new?merge_request%5Bsource_branch%5D=ai`
+>
+> **대상은 `dev` 다.** 대상 브랜치를 URL 에 넣지 않으면 GitLab 이 프로젝트 기본
+> 브랜치(`master`)로 채운다. 규칙은 `master ← dev ← ai` 이므로 `ai` 가 `master` 로
+> 바로 가면 안 된다.
+>
+> ```
+> /-/merge_requests/new?merge_request%5Bsource_branch%5D=ai&merge_request%5Btarget_branch%5D=dev
+> ```
 
 ---
 
