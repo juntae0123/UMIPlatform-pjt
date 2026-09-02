@@ -108,11 +108,45 @@ def training_target(
     raise ValueError(f"action_space 는 {ACTION_SPACES} 중 하나여야 한다: {action_space!r}")
 
 
+def target_scale(
+    target: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-joint mean and std of the regression target.
+    회귀 목표의 관절별 평균과 표준편차.
+
+    Needed because the contract normalises against the joint *range*, and a delta
+    is a tiny fraction of that range -- roughly 0.0008 to 0.03. A final linear
+    layer initialises to outputs of order 0.1, so most of training is spent
+    shrinking toward zero and the structure that matters never gets fit. Measured:
+    a network with 1.3M parameters failed to memorise a single 141-sample episode,
+    ending only 24% better than predicting zero. 🟢 2026-09-02
+    계약이 관절 **범위** 기준으로 정규화하는데 델타는 그 범위의 0.0008~0.03 밖에 안
+    되기 때문에 필요하다. 마지막 선형층은 O(0.1) 규모 출력으로 초기화되므로 학습
+    대부분이 0 쪽으로 줄이는 데 쓰이고 정작 중요한 구조는 학습되지 않는다. 실측:
+    1.3M 파라미터가 141샘플짜리 에피소드 하나를 외우지 못했고, "0 출력"보다 24%
+    나은 데서 멈췄다.
+    """
+    mean = target.mean(dim=0)
+    std = target.std(dim=0)
+    # A joint that never moves has std 0. Dividing by it would produce inf, and a
+    # constant target needs no scaling anyway.
+    # 한 번도 안 움직인 관절은 std 가 0 이다. 그걸로 나누면 inf 가 되고, 상수 목표는
+    # 애초에 스케일이 필요 없다.
+    std = torch.where(std < 1e-8, torch.ones_like(std), std)
+    return mean, std
+
+
 def to_action(
-    raw: torch.Tensor, state: torch.Tensor, action_space: str
+    raw: torch.Tensor,
+    state: torch.Tensor,
+    action_space: str,
+    target_mean: torch.Tensor | None = None,
+    target_std: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Turn the network's output into a contract-unit action.
     신경망 출력을 계약 단위 행동으로 바꾼다."""
+    if target_mean is not None and target_std is not None:
+        raw = raw * target_std + target_mean
     if action_space == "joint_delta":
         return state + raw
     if action_space == "joint_absolute":
@@ -204,6 +238,12 @@ class CheckpointMeta:
     # 헤드가 어느 공간을 회귀하는가. 이 값이 없는 체크포인트는 델타 목표 이전 것이라
     # 절대다. 델타로 불러오면 상태가 두 번 더해져 팔이 엉뚱하게 간다.
     action_space: str
+    # Dataset statistics the head was standardised against. Without them the raw
+    # output cannot be turned back into an action.
+    # 헤드가 표준화된 기준이 된 데이터셋 통계. 이게 없으면 원 출력을 행동으로
+    # 되돌릴 수 없다.
+    target_mean: list[float] | None
+    target_std: list[float] | None
     train_config: dict[str, Any]
     config_sha: str
     code_sha: str
@@ -253,6 +293,13 @@ class BCPolicy:
         self._mean = float(d["image_mean"])
         self._std = float(d["image_std"])
         self.action_space = str(self.meta.get("action_space", "joint_absolute"))
+        tm, ts = self.meta.get("target_mean"), self.meta.get("target_std")
+        self._t_mean = (
+            torch.tensor(tm, dtype=torch.float32, device=self.device) if tm else None
+        )
+        self._t_std = (
+            torch.tensor(ts, dtype=torch.float32, device=self.device) if ts else None
+        )
         self._ckpt = Path(ckpt_path)
         # The head is linear, so the network can predict outside the contract's
         # [-1, 1]. Clipping keeps the action valid, and counting how often it
@@ -291,7 +338,7 @@ class BCPolicy:
         state = torch.from_numpy(np.asarray(obs.state, dtype=np.float32)).unsqueeze(0)
         state = state.to(self.device)
         raw = self.model(images, state)
-        out = to_action(raw, state, self.action_space)
+        out = to_action(raw, state, self.action_space, self._t_mean, self._t_std)
         action = out.squeeze(0).cpu().numpy().astype(np.float32)
         action = check_action(action, self.name)
         clipped = np.clip(action, -1.0, 1.0)
@@ -304,7 +351,8 @@ class BCPolicy:
         이 체크포인트가 실제로 무엇인지 한 줄로."""
         m = self.meta
         return (
-            f"bc ckpt {self._ckpt.name} · 행동공간 {self.action_space} · "
+            f"bc ckpt {self._ckpt.name} · 행동공간 {self.action_space}"
+            f"{'(표준화)' if self._t_std is not None else ''} · "
             f"파라미터 {m['n_params']:,} · "
             f"학습대상 {m['trained_on']} · 에피소드 {m['n_episodes']} · "
             f"샘플 {m['n_samples']} · epochs {m['epochs_run']} · "
