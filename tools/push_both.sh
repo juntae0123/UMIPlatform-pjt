@@ -19,10 +19,21 @@ cd "$REPO_ROOT"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 MIRROR_BRANCH="ai-standalone"
 
-if [ -n "$(git status --porcelain)" ]; then
+# Only tracked changes block the push. Untracked files are not going anywhere --
+# refusing because of one is refusing for a reason that does not exist.
+# push 를 막는 것은 추적 중인 변경뿐이다. 추적되지 않는 파일은 어차피 올라가지
+# 않으므로, 그것 때문에 거부하는 것은 존재하지 않는 이유로 거부하는 것이다.
+if ! git diff --quiet || ! git diff --cached --quiet; then
   echo "✗ 커밋되지 않은 변경이 있다. 커밋하고 다시 실행하라:"
-  git status --short
+  git status --short --untracked-files=no
   exit 1
+fi
+
+UNTRACKED="$(git ls-files --others --exclude-standard | head -5)"
+if [ -n "${UNTRACKED}" ]; then
+  echo "· 추적되지 않는 파일이 있다 (올라가지 않는다):"
+  echo "${UNTRACKED}" | sed 's/^/    /'
+  echo
 fi
 
 echo "=============================================="
