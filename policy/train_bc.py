@@ -207,6 +207,7 @@ def main() -> int:
 
     out = args.out or (AI_ROOT / cfg["checkpoint"]["dir"] /
                        ("bc_random.pt" if args.random else "bc.pt"))
+    best_out = out.with_name(out.stem + "_bestval" + out.suffix)
     best = float("inf")
     history: list[dict[str, float]] = []
     t0 = time.perf_counter()
@@ -221,7 +222,7 @@ def main() -> int:
         mark = ""
         if loaders["val"] is not None and va < best:
             best = va
-            save_checkpoint(out, model, CheckpointMeta(
+            save_checkpoint(best_out, model, CheckpointMeta(
                 camera_names=list(cameras), contract_version=CONTRACT_VERSION,
                 action_space=model.action_space,
                 target_mean=[float(v) for v in t_mean.cpu()] if t_mean is not None else None,
@@ -230,22 +231,37 @@ def main() -> int:
                 code_sha=code_digest(), n_params=n_params, n_episodes=n_episodes,
                 n_samples=len(dataset), epochs_run=ep, best_val_loss=best,
                 trained_on=trained_on))
-            mark = "  ← 저장"
+            mark = "  ← best-val 저장"
         print(f"  epoch {ep:3d}/{epochs}  train {tr:.5f}  val {va:.5f}{mark}")
 
     elapsed = time.perf_counter() - t0
-    if best == float("inf"):
-        save_checkpoint(out, model, CheckpointMeta(
+
+    # The main checkpoint is the LAST epoch, not the one with the lowest val loss.
+    # This project's own rule says val loss only tells you whether training broke,
+    # and yet checkpoint selection was being driven by it -- on a flat val curve
+    # that picks an arbitrary early epoch. Measured: a 200-epoch run saved its
+    # epoch-1 model, and the rollout that "evaluated the policy" evaluated an
+    # untrained network. 🟢 2026-09-02
+    # 주 체크포인트는 val loss 가 가장 낮은 epoch 이 아니라 **마지막 epoch** 이다.
+    # 이 프로젝트 규칙은 val loss 가 "학습이 망가졌나"만 말한다고 해놓고, 정작
+    # 체크포인트 선택을 그것이 하고 있었다. val 곡선이 평평하면 임의의 이른 epoch 이
+    # 뽑힌다. 실측: 200 epoch 실행이 epoch 1 모델을 저장했고, "정책을 평가"한 롤아웃이
+    # 학습되지 않은 신경망을 평가했다.
+    save_checkpoint(out, model, CheckpointMeta(
             camera_names=list(cameras), contract_version=CONTRACT_VERSION,
             action_space=model.action_space,
             target_mean=[float(v) for v in t_mean.cpu()] if t_mean is not None else None,
             target_std=[float(v) for v in t_std.cpu()] if t_std is not None else None,
             train_config=cfg, config_sha=file_digest(DEFAULT_CONFIG),
             code_sha=code_digest(), n_params=n_params, n_episodes=n_episodes,
-            n_samples=len(dataset), epochs_run=epochs, best_val_loss=float("nan"),
+            n_samples=len(dataset), epochs_run=epochs, best_val_loss=best,
             trained_on=trained_on))
 
-    print(f"\n체크포인트: {out}  ({elapsed:.1f}초, {elapsed / epochs:.2f}초/epoch)")
+    print(f"\n체크포인트(마지막 epoch): {out}  ({elapsed:.1f}초, {elapsed / epochs:.2f}초/epoch)")
+    if best_out.exists():
+        print(f"참고용(best val): {best_out}")
+        print("  ⚠️ 판정에는 마지막 epoch 을 쓴다. val loss 가 낮은 epoch 이 좋은 정책이라는"
+              " 근거가 이 프로젝트에는 없다")
     print("\n" + "=" * 70)
     print("⚠️ 손실은 성과가 아니다. 이 체크포인트가 쓸 만한지는 아직 모른다.")
     print("   판정은 롤아웃 성공률이고, 넘어야 할 값은 20.0% 다:")
