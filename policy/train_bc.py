@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, Subset
 from contract.episode import CONTRACT_VERSION
 from data.dataset import EpisodeDataset, RandomTensorDataset, collate
 from paths import AI_ROOT, DEFAULT_CONFIG
-from policy.bc import BCNet, CheckpointMeta, load_train_config, save_checkpoint
+from policy.bc import BCNet, CheckpointMeta, load_train_config, save_checkpoint, training_target
 from tracking.exp_log import code_digest, file_digest, log_run
 
 DEFAULT_CAMERAS = ["cam_front", "cam_wrist"]
@@ -59,7 +59,12 @@ def run_epoch(
     grad_clip: float = 0.0,
 ) -> float:
     """One pass. `optimizer=None` means evaluation.
-    한 바퀴. `optimizer=None` 이면 평가."""
+    한 바퀴. `optimizer=None` 이면 평가.
+
+    ⚠️ 손실은 `model.action_space` 가 정하는 공간에서 계산된다. 절대 목표의 손실과
+       델타 목표의 손실은 **서로 비교할 수 없다** — 크기가 두 자릿수 다르다.
+       비교는 언제나 롤아웃 성공률로 한다.
+    """
     train = optimizer is not None
     model.train(train)
     total, n = 0.0, 0
@@ -68,7 +73,8 @@ def run_epoch(
             images = {c: v.to(device) for c, v in images.items()}
             state, action = state.to(device), action.to(device)
             pred = model(images, state)
-            loss = criterion(pred, action)
+            target = training_target(action, state, model.action_space)
+            loss = criterion(pred, target)
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -89,6 +95,8 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=None, help="설정값을 덮어쓴다")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="설정값을 덮어쓴다. 학습 3회 반복 시 서로 다른 값을 준다")
     parser.add_argument("--out", type=Path, default=None, help="체크포인트 경로")
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
     parser.add_argument("--log", action="store_true")
@@ -98,7 +106,7 @@ def main() -> int:
     t = cfg["train"]
     epochs = int(args.epochs if args.epochs is not None else t["epochs"])
     batch_size = int(args.batch_size if args.batch_size is not None else t["batch_size"])
-    seed = int(t["seed"])
+    seed = int(args.seed if args.seed is not None else t["seed"])
     torch.manual_seed(seed)
     np.random.seed(seed)
     device = torch.device(args.device)
@@ -153,6 +161,7 @@ def main() -> int:
             best = va
             save_checkpoint(out, model, CheckpointMeta(
                 camera_names=list(cameras), contract_version=CONTRACT_VERSION,
+                action_space=model.action_space,
                 train_config=cfg, config_sha=file_digest(DEFAULT_CONFIG),
                 code_sha=code_digest(), n_params=n_params, n_episodes=n_episodes,
                 n_samples=len(dataset), epochs_run=ep, best_val_loss=best,
@@ -164,6 +173,7 @@ def main() -> int:
     if best == float("inf"):
         save_checkpoint(out, model, CheckpointMeta(
             camera_names=list(cameras), contract_version=CONTRACT_VERSION,
+            action_space=model.action_space,
             train_config=cfg, config_sha=file_digest(DEFAULT_CONFIG),
             code_sha=code_digest(), n_params=n_params, n_episodes=n_episodes,
             n_samples=len(dataset), epochs_run=epochs, best_val_loss=float("nan"),
@@ -185,7 +195,8 @@ def main() -> int:
                 "trained_on": trained_on, "n_episodes": n_episodes,
                 "n_samples": len(dataset), "epochs": epochs, "batch_size": batch_size,
                 "lr": t["lr"], "loss": t["loss"], "seed": seed, "device": str(device),
-                "encoder_mode": cfg["model"]["encoder_mode"], "n_params": n_params,
+                "encoder_mode": cfg["model"]["encoder_mode"],
+                "action_space": model.action_space, "n_params": n_params,
                 "config_sha": file_digest(DEFAULT_CONFIG),
                 "metric_note": "손실은 학습이 망가졌는지 확인용. 판정은 롤아웃 성공률(게이트 20.0%)",
             },

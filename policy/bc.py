@@ -78,6 +78,48 @@ class ConvEncoder(nn.Module):
         return self.proj(h)
 
 
+ACTION_SPACES = ("joint_absolute", "joint_delta")
+"""What the network regresses. Not a contract change -- the dataset always stores
+absolute joint angles and this is a transform applied at train and inference time.
+신경망이 무엇을 회귀하는가. 계약 변경이 아니다. 데이터셋에는 언제나 절대 관절각이
+저장되고, 이것은 학습·추론 시점에 적용되는 변환이다."""
+
+
+def training_target(
+    action: torch.Tensor, state: torch.Tensor, action_space: str
+) -> torch.Tensor:
+    """The tensor the loss is computed against.
+    손실을 계산할 대상 텐서.
+
+    With an absolute target most of the loss is spent on "where is the arm now",
+    which the state input already answers -- measured at 86% on this dataset. The
+    part that actually produces motion, `action - state`, is small and gets left
+    wrong. Subtracting the state removes exactly the term the state explains, so
+    what is left is the part that requires knowing where the object is.
+    절대 목표에서는 손실 대부분이 "팔이 지금 어디 있나"에 쓰이는데, 그건 상태 입력이
+    이미 답하고 있다 — 이 데이터셋에서 86% 로 실측됐다. 실제로 움직임을 만드는
+    `action - state` 는 작고 틀린 채 남는다. 상태를 빼면 상태가 설명하던 항이 정확히
+    사라지고, 남는 것은 물체가 어디 있는지 알아야 설명되는 몫이다.
+    """
+    if action_space == "joint_delta":
+        return action - state
+    if action_space == "joint_absolute":
+        return action
+    raise ValueError(f"action_space 는 {ACTION_SPACES} 중 하나여야 한다: {action_space!r}")
+
+
+def to_action(
+    raw: torch.Tensor, state: torch.Tensor, action_space: str
+) -> torch.Tensor:
+    """Turn the network's output into a contract-unit action.
+    신경망 출력을 계약 단위 행동으로 바꾼다."""
+    if action_space == "joint_delta":
+        return state + raw
+    if action_space == "joint_absolute":
+        return raw
+    raise ValueError(f"action_space 는 {ACTION_SPACES} 중 하나여야 한다: {action_space!r}")
+
+
 class BCNet(nn.Module):
     """Images (+ joint state) -> one action. Single step, no chunking.
     이미지 (+ 관절 state) -> 행동 하나. 단일 스텝, 청킹 없음.
@@ -100,6 +142,16 @@ class BCNet(nn.Module):
         self.camera_names = list(camera_names)
         self.encoder_mode = m["encoder_mode"]
         self.use_state = bool(m["use_state"])
+        self.action_space = str(m.get("action_space", "joint_absolute"))
+        if self.action_space not in ACTION_SPACES:
+            raise ValueError(
+                f"action_space 는 {ACTION_SPACES} 중 하나여야 한다: {self.action_space!r}"
+            )
+        if self.action_space == "joint_delta" and not self.use_state:
+            raise ValueError(
+                "joint_delta 는 출력에 state 를 더해 행동을 만든다. use_state=false 로는 "
+                "학습 목표와 추론이 어긋난다"
+            )
         feat = int(m["feature_dim"])
 
         if self.encoder_mode == "shared":
@@ -121,8 +173,13 @@ class BCNet(nn.Module):
         self.head = nn.Sequential(*head)
 
     def forward(self, images: dict[str, torch.Tensor], state: torch.Tensor) -> torch.Tensor:
-        """images[cam]: (B,3,H,W) float · state: (B,6) -> (B,6).
-        images[cam]: (B,3,H,W) float · state: (B,6) -> (B,6)."""
+        """Raw head output. Under `joint_delta` this is the residual, not the action.
+        헤드의 원 출력. `joint_delta` 에서는 이것이 행동이 아니라 잔차다.
+
+        Converting here would hide which space the loss is computed in. The caller
+        applies `to_action` when it wants an action.
+        여기서 변환하면 손실이 어느 공간에서 계산되는지가 가려진다. 행동이 필요한
+        호출자가 `to_action` 을 적용한다."""
         feats = [self.encoders[c](images[c]) for c in self.camera_names]
         if self.use_state:
             feats.append(state)
@@ -141,6 +198,12 @@ class CheckpointMeta:
 
     camera_names: list[str]
     contract_version: str
+    # Which space the head regresses. A checkpoint without this predates the
+    # delta target and is absolute -- loading it as delta would add the state
+    # twice and drive the arm to nonsense.
+    # 헤드가 어느 공간을 회귀하는가. 이 값이 없는 체크포인트는 델타 목표 이전 것이라
+    # 절대다. 델타로 불러오면 상태가 두 번 더해져 팔이 엉뚱하게 간다.
+    action_space: str
     train_config: dict[str, Any]
     config_sha: str
     code_sha: str
@@ -189,6 +252,7 @@ class BCPolicy:
         d = self.meta["train_config"]["data"]
         self._mean = float(d["image_mean"])
         self._std = float(d["image_std"])
+        self.action_space = str(self.meta.get("action_space", "joint_absolute"))
         self._ckpt = Path(ckpt_path)
         # The head is linear, so the network can predict outside the contract's
         # [-1, 1]. Clipping keeps the action valid, and counting how often it
@@ -225,7 +289,9 @@ class BCPolicy:
             arr = torch.from_numpy(obs.images[cam].astype(np.float32) / 255.0)
             images[cam] = ((arr - self._mean) / self._std).unsqueeze(0).to(self.device)
         state = torch.from_numpy(np.asarray(obs.state, dtype=np.float32)).unsqueeze(0)
-        out = self.model(images, state.to(self.device))
+        state = state.to(self.device)
+        raw = self.model(images, state)
+        out = to_action(raw, state, self.action_space)
         action = out.squeeze(0).cpu().numpy().astype(np.float32)
         action = check_action(action, self.name)
         clipped = np.clip(action, -1.0, 1.0)
@@ -238,7 +304,8 @@ class BCPolicy:
         이 체크포인트가 실제로 무엇인지 한 줄로."""
         m = self.meta
         return (
-            f"bc ckpt {self._ckpt.name} · 파라미터 {m['n_params']:,} · "
+            f"bc ckpt {self._ckpt.name} · 행동공간 {self.action_space} · "
+            f"파라미터 {m['n_params']:,} · "
             f"학습대상 {m['trained_on']} · 에피소드 {m['n_episodes']} · "
             f"샘플 {m['n_samples']} · epochs {m['epochs_run']} · "
             f"best val_loss {m['best_val_loss']:.5f}"

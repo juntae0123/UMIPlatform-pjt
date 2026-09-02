@@ -17,6 +17,19 @@ model:
   dropout: 0.1
   use_state: true             # 관절 state(6) 를 입력에 넣는다
 
+  # 무엇을 회귀할 것인가. 저장 포맷과 데이터 계약은 이 값과 무관하다 —
+  # 데이터셋에는 언제나 절대 관절각이 들어 있고, 이건 학습·추론 시점의 변환이다.
+  #
+  # joint_absolute: 목표 = action (절대 관절각)
+  # joint_delta:    목표 = action - state (잔차). 출력에 state 를 더해 행동을 만든다
+  #
+  # ⚠️ 실측 근거 (2026-09-02, image_sensitivity):
+  #    절대 목표에서는 **상태만으로 정답의 86% 가 설명된다.** 물체가 옮겨지면 팔도
+  #    다른 곳에 있고 그 변위가 곧 정답 차이라, 신경망이 이미지를 볼 이유가 없었다.
+  #    잔차로 바꾸면 그 86% 가 목표에서 사라지고, 남는 것(에피소드 간 차이 0.000773)은
+  #    물체 위치를 알아야만 설명되는 몫이다. 그 크기는 틱당 이동량과 같은 규모다.
+  action_space: joint_delta   # joint_absolute | joint_delta
+
 train:
   batch_size: 32
   epochs: 20
