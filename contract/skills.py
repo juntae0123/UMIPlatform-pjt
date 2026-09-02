@@ -61,6 +61,31 @@ DESTINATIONS: tuple[str, ...] = (
 
 POLICY_KINDS: tuple[str, ...] = ("learned", "scripted")
 
+TIERS: tuple[str, ...] = ("tutorial", "demo")
+"""Which layer a skill belongs to, and they are not the same product claim.
+스킬이 어느 층에 속하는가. 둘은 같은 제품 주장이 아니다.
+
+  tutorial — 플랫폼에 미리 학습시켜 넣어둔 기본 제공 스킬. 범용 프리미티브
+  demo     — 특정 페르소나를 겨냥해 **시연 자리에서 추가하는** 스킬
+
+The product claim is not "we built five behaviours", it is "a user can add a new
+behaviour by demonstrating it". A tutorial skill demonstrates the platform; a
+demo skill demonstrates the claim. Showing five tutorial skills work is weaker
+evidence than showing one skill being added and then working.
+제품 주장은 "우리가 다섯 행동을 만들었다"가 아니라 "사용자가 시연으로 새 행동을
+추가할 수 있다"이다. 튜토리얼 스킬은 플랫폼을 보여주고, 데모 스킬은 그 주장을
+보여준다. 튜토리얼 다섯이 되는 것보다 하나가 추가되어 동작하는 것이 더 강한 근거다."""
+
+STATUSES: tuple[str, ...] = (
+    "planned",      # 정의만 있다. 데이터 없음
+    "collecting",   # 시연 수집 중
+    "training",     # 학습 중
+    "gate_failed",  # 학습했으나 게이트 미통과
+    "deployed",     # 게이트 통과, 배포됨
+)
+"""Where a skill actually stands. Five planned skills are not five skills.
+스킬이 실제로 어디까지 왔는가. 계획된 다섯은 다섯 개가 아니다."""
+
 # Gates. Fixed before any skill was registered.
 # 게이트. 스킬을 하나도 등록하기 전에 확정했다.
 ROLLOUT_GATE = 0.20
@@ -107,6 +132,7 @@ class SkillSpec:
     place_step: str
     needs_vlm: bool
     destinations: tuple[str, ...]
+    tier: str = "tutorial"
 
 
 CATALOG: dict[str, SkillSpec] = {
@@ -235,6 +261,8 @@ class SkillEntry:
 
     skill_id: str
     version: str
+    tier: str
+    status: str
     policy: PolicyRef
     post_actions: list[PostAction]
     object_size_mm: list[float]
@@ -268,6 +296,15 @@ def validate_entry(entry: SkillEntry, cfg: dict[str, Any]) -> list[str]:
         return problems
 
     spec = entry.spec
+
+    if entry.tier not in TIERS:
+        problems.append(f"tier 는 {TIERS} 중 하나여야 한다: {entry.tier!r}")
+    if entry.status not in STATUSES:
+        problems.append(f"status 는 {STATUSES} 중 하나여야 한다: {entry.status!r}")
+    elif entry.status != "deployed":
+        problems.append(f"status={entry.status!r} — 아직 배포 단계가 아니다")
+    if entry.tier == "demo" and not entry.notes.get("persona"):
+        problems.append("demo 스킬에는 notes.persona 가 필요하다 — 누구를 겨냥한 동작인지 없이는 시연에 못 쓴다")
 
     if entry.policy.kind not in POLICY_KINDS:
         problems.append(f"policy.kind 는 {POLICY_KINDS} 중 하나여야 한다: {entry.policy.kind!r}")
@@ -334,7 +371,23 @@ def shared_policy_report(entries: list[SkillEntry]) -> str:
         if e.policy.kind == "learned" and e.policy.ckpt_uri:
             ckpts.setdefault(e.policy.ckpt_uri, []).append(e.skill_id)
 
-    lines = [f"스킬 {len(entries)}개 · 서로 다른 학습 정책 {len(ckpts)}개"]
+    by_tier: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    for e in entries:
+        by_tier[e.tier] = by_tier.get(e.tier, 0) + 1
+        by_status[e.status] = by_status.get(e.status, 0) + 1
+
+    lines = [
+        f"스킬 {len(entries)}개 · 서로 다른 학습 정책 {len(ckpts)}개",
+        "  층: " + ", ".join(f"{k} {v}" for k, v in sorted(by_tier.items())),
+        "  상태: " + ", ".join(f"{k} {v}" for k, v in sorted(by_status.items())),
+    ]
+    n_deployed = by_status.get("deployed", 0)
+    if n_deployed < len(entries):
+        lines.append(
+            f"  → 실제로 동작하는 스킬은 {n_deployed}개다. "
+            "계획된 개수를 구현된 개수처럼 말하지 마라."
+        )
     for uri, ids in sorted(ckpts.items()):
         lines.append(f"  {uri}  ←  {', '.join(sorted(ids))}")
     if len(ckpts) == 1 and len(entries) > 1:
@@ -437,6 +490,8 @@ def entry_from_dict(d: dict[str, Any]) -> SkillEntry:
     return SkillEntry(
         skill_id=d["skill_id"],
         version=d["version"],
+        tier=d.get("tier", "tutorial"),
+        status=d.get("status", "planned"),
         policy=PolicyRef(**pol, gate=GateRecord(**gate) if gate else None),
         post_actions=[PostAction(**pa) for pa in d.get("post_actions", [])],
         object_size_mm=list(d.get("object_size_mm", [])),

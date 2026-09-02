@@ -42,13 +42,14 @@ from sim.mujoco.build_scene import load_config  # noqa: E402
 
 
 def print_catalog() -> None:
-    print(f"{'skill_id':16s} {'이름':14s} {'VLM':4s} {'놓기 단계':32s} destination")
+    print(f"{'skill_id':16s} {'이름':14s} {'층':9s} {'VLM':4s} {'놓기 단계':30s} destination")
     print("-" * 100)
     for sid in SKILL_IDS:
         s = CATALOG[sid]
         print(
-            f"{s.skill_id:16s} {s.display_name:14s} {'필요' if s.needs_vlm else '  · ':4s} "
-            f"{s.place_step:32s} {','.join(s.destinations)}"
+            f"{s.skill_id:16s} {s.display_name:14s} {s.tier:9s} "
+            f"{'필요' if s.needs_vlm else '  · ':4s} "
+            f"{s.place_step:30s} {','.join(s.destinations)}"
         )
 
 
@@ -79,6 +80,8 @@ def draft_entries(cfg: dict) -> list[SkillEntry]:
             SkillEntry(
                 skill_id=sid,
                 version="0.1.0-draft",
+                tier=spec.tier,
+                status="planned",
                 policy=PolicyRef(
                     kind="learned",
                     ckpt_uri="",
