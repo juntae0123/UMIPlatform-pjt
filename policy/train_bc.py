@@ -25,7 +25,14 @@ from torch.utils.data import DataLoader, Subset
 from contract.episode import CONTRACT_VERSION
 from data.dataset import EpisodeDataset, RandomTensorDataset, collate
 from paths import AI_ROOT, DEFAULT_CONFIG
-from policy.bc import BCNet, CheckpointMeta, load_train_config, save_checkpoint, training_target
+from policy.bc import (
+    BCNet,
+    CheckpointMeta,
+    load_train_config,
+    save_checkpoint,
+    target_scale,
+    training_target,
+)
 from tracking.exp_log import code_digest, file_digest, log_run
 
 DEFAULT_CAMERAS = ["cam_front", "cam_wrist"]
@@ -57,6 +64,8 @@ def run_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
     grad_clip: float = 0.0,
+    target_mean: torch.Tensor | None = None,
+    target_std: torch.Tensor | None = None,
 ) -> float:
     """One pass. `optimizer=None` means evaluation.
     한 바퀴. `optimizer=None` 이면 평가.
@@ -74,6 +83,8 @@ def run_epoch(
             state, action = state.to(device), action.to(device)
             pred = model(images, state)
             target = training_target(action, state, model.action_space)
+            if target_std is not None:
+                target = (target - target_mean) / target_std
             loss = criterion(pred, target)
             if train:
                 optimizer.zero_grad(set_to_none=True)
@@ -135,7 +146,35 @@ def main() -> int:
         if va_idx else None,
     }
 
+    # Target statistics, computed from the episode arrays rather than by iterating
+    # the DataLoader -- the loader would decode 13,818 images to read six numbers.
+    # 타겟 통계. DataLoader 를 도는 대신 에피소드 배열에서 직접 계산한다. 로더로 돌면
+    # 숫자 여섯 개를 읽으려고 이미지 13,818장을 디코딩한다.
+    t_mean = t_std = None
+    baseline_norm = float("nan")
+    if getattr(dataset, "episodes", None):
+        acts = torch.from_numpy(
+            np.concatenate([e.action for e in dataset.episodes], axis=0)
+        ).float()
+        sts = torch.from_numpy(
+            np.concatenate([e.state for e in dataset.episodes], axis=0)
+        ).float()
+        raw_target = training_target(acts, sts, str(cfg["model"].get("action_space", "joint_absolute")))
+        if bool(t.get("normalize_target", True)):
+            t_mean, t_std = target_scale(raw_target)
+            scaled = (raw_target - t_mean) / t_std
+        else:
+            scaled = raw_target
+        # What a network that always outputs zero would score, in the same units
+        # the epoch losses are printed in. A loss without this reference cannot be
+        # read: 0.0057 looked fine until it turned out zero-output scores 0.0075.
+        # 항상 0 을 내는 신경망의 점수. epoch 손실과 같은 단위다. 이 기준 없이는 손실을
+        # 읽을 수 없다 — 0.0057 이 괜찮아 보였는데 0 출력이 0.0075 였다.
+        baseline_norm = float(scaled.abs().mean())
+
     model = BCNet(cameras, cfg).to(device)
+    if t_mean is not None:
+        t_mean, t_std = t_mean.to(device), t_std.to(device)
     n_params = model.n_params()
 
     # The action space is a one-line config change that silently decides what the
@@ -151,6 +190,14 @@ def main() -> int:
         print("  — 목표는 절대 관절각")
         print("  ⚠️ 실측상 이 공간에서는 상태만으로 정답의 86% 가 설명된다"
               " (2026-09-02 image_sensitivity)")
+    if t_std is not None:
+        print(f"타겟 표준화: 켬 (관절별 std {[round(float(v), 5) for v in t_std.cpu()]})")
+    else:
+        print("타겟 표준화: 끔")
+    if baseline_norm == baseline_norm:  # not NaN
+        print(f"⚠️ 자명한 예측기(항상 0) 손실 = {baseline_norm:.5f}")
+        print("   epoch 손실이 이 값 근처에서 멈추면 학습이 안 되고 있는 것이다."
+              " 손실이 내려간 것만으로 판단하지 마라")
     print(f"파라미터 {n_params:,}개 (~{n_params * 4 / 1024 / 1024:.1f}MB fp32)")
     print("⚠️ Jetson 8GB 에 VLM 과 함께 올라가야 한다 — 이슈 42 미검증\n")
 
@@ -167,7 +214,8 @@ def main() -> int:
     for ep in range(1, epochs + 1):
         tr = run_epoch(model, loaders["train"], criterion, device, optimizer,
                        float(t["grad_clip"]))
-        va = (run_epoch(model, loaders["val"], criterion, device)
+        va = (run_epoch(model, loaders["val"], criterion, device,
+                           target_mean=t_mean, target_std=t_std)
               if loaders["val"] is not None else float("nan"))
         history.append({"epoch": ep, "train_loss": tr, "val_loss": va})
         mark = ""
@@ -176,6 +224,8 @@ def main() -> int:
             save_checkpoint(out, model, CheckpointMeta(
                 camera_names=list(cameras), contract_version=CONTRACT_VERSION,
                 action_space=model.action_space,
+                target_mean=[float(v) for v in t_mean.cpu()] if t_mean is not None else None,
+                target_std=[float(v) for v in t_std.cpu()] if t_std is not None else None,
                 train_config=cfg, config_sha=file_digest(DEFAULT_CONFIG),
                 code_sha=code_digest(), n_params=n_params, n_episodes=n_episodes,
                 n_samples=len(dataset), epochs_run=ep, best_val_loss=best,
@@ -188,6 +238,8 @@ def main() -> int:
         save_checkpoint(out, model, CheckpointMeta(
             camera_names=list(cameras), contract_version=CONTRACT_VERSION,
             action_space=model.action_space,
+            target_mean=[float(v) for v in t_mean.cpu()] if t_mean is not None else None,
+            target_std=[float(v) for v in t_std.cpu()] if t_std is not None else None,
             train_config=cfg, config_sha=file_digest(DEFAULT_CONFIG),
             code_sha=code_digest(), n_params=n_params, n_episodes=n_episodes,
             n_samples=len(dataset), epochs_run=epochs, best_val_loss=float("nan"),
@@ -210,7 +262,9 @@ def main() -> int:
                 "n_samples": len(dataset), "epochs": epochs, "batch_size": batch_size,
                 "lr": t["lr"], "loss": t["loss"], "seed": seed, "device": str(device),
                 "encoder_mode": cfg["model"]["encoder_mode"],
-                "action_space": model.action_space, "n_params": n_params,
+                "action_space": model.action_space,
+                "normalize_target": t_std is not None,
+                "trivial_baseline_loss": baseline_norm, "n_params": n_params,
                 "config_sha": file_digest(DEFAULT_CONFIG),
                 "metric_note": "손실은 학습이 망가졌는지 확인용. 판정은 롤아웃 성공률(게이트 20.0%)",
             },
