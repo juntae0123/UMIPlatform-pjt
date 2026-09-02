@@ -159,5 +159,19 @@ grasp:
 
   success_lift_m: 0.05                # 성공 판정: 이만큼 올리고 접촉 유지
 
+# 도달 가능 작업영역 — 실측. 스킬 레지스트리(contract/skills.py)가 이 값으로
+# 각 스킬의 workspace 선언을 검증한다.
+# 측정: 2026-08-27 reach_scan, 255점 격자 중 163점 도달 = 63.9%.
+#       최대 연속 직사각형 x[0.10,0.25] y[-0.175,0.175] = 15cm x 35cm
+#       상세: docs/MEASURE_mujoco_scene_0827.md
+# ⚠️ 시뮬 IK 기준값이다. 실물에서 재계측해야 한다.
+workspace:
+  reachable_rect_m:
+    x: [0.10, 0.25]
+    y: [-0.175, 0.175]
+  reachable_fraction: 0.639
+  measured_at: "2026-08-27"
+  source: docs/MEASURE_mujoco_scene_0827.md
+
 control:
   rate_hz: 30                   # 데이터 규격 주기
