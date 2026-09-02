@@ -1,0 +1,43 @@
+{
+  "skill_id": "present_inspect",
+  "version": "0.1.0-draft",
+  "policy": {
+    "kind": "learned",
+    "contract_version": "0.1.0-provisional",
+    "ckpt_uri": "",
+    "trained_on": "",
+    "action_space": "joint_delta",
+    "gate": null
+  },
+  "post_actions": [
+    {
+      "name": "제시 자세로 이동, 회전, 원위치 복귀 후 개방",
+      "destination": "origin",
+      "params": {}
+    }
+  ],
+  "object_size_mm": [
+    15.0,
+    25.0
+  ],
+  "workspace_m": {
+    "x": [
+      0.1,
+      0.25
+    ],
+    "y": [
+      -0.175,
+      0.175
+    ]
+  },
+  "robot": {
+    "model": "so101",
+    "dof": 6
+  },
+  "created_by": "김준태(트랙B)",
+  "created_at": "2026-09-02T00:27:03+00:00",
+  "notes": {
+    "plan": "A — 파지 정책 1개 공유. B(스킬별 독립 정책)는 확장 목표",
+    "blocked_by": "파지 정책이 게이트 미통과. 계약 skill 필드는 트랙 A 확인 대기"
+  }
+}
