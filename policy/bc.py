@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import yaml
 
-from paths import CONFIG_DIR
+from paths import CONFIG_DIR, DEFAULT_CONFIG
 from policy.base import check_action
 from sim.base import Observation
 
@@ -78,11 +78,42 @@ class ConvEncoder(nn.Module):
         return self.proj(h)
 
 
-ACTION_SPACES = ("joint_absolute", "joint_delta")
+ACTION_SPACES = ("joint_absolute", "joint_delta", "joint_delta_gripper_abs")
 """What the network regresses. Not a contract change -- the dataset always stores
 absolute joint angles and this is a transform applied at train and inference time.
 신경망이 무엇을 회귀하는가. 계약 변경이 아니다. 데이터셋에는 언제나 절대 관절각이
-저장되고, 이것은 학습·추론 시점에 적용되는 변환이다."""
+저장되고, 이것은 학습·추론 시점에 적용되는 변환이다.
+
+joint_delta_gripper_abs: arm joints as `action - state`, gripper as the absolute
+command. The gripper command is a set-point that changes twice per episode (open,
+then close), so its delta is zero on 124 of 141 steps and a spike on the other 17.
+Under an L1 loss the optimum for a mostly-zero target is its median -- zero -- and
+the network learned exactly that: arm-joint error fell to 0.17x the required motion
+while the gripper stayed at 1.07x, and in closed loop the gripper never opened.
+🟢 2026-09-02 trace_execution, one-episode memorisation test.
+joint_delta_gripper_abs: 팔 관절은 `action - state`, 그리퍼는 절대 명령. 그리퍼
+명령은 에피소드당 두 번(열기, 닫기) 바뀌는 설정값이라 델타가 141스텝 중 124스텝에서
+0 이고 17스텝에서만 스파이크다. L1 손실에서 대부분 0 인 목표의 최적값은 중앙값 — 0 —
+이고 신경망은 정확히 그것을 배웠다. 팔 관절 오차는 필요한 움직임의 0.17배까지
+내려갔는데 그리퍼는 1.07배에 머물렀고, 폐루프에서 그리퍼가 열리지 않았다."""
+
+
+def gripper_index(config_path: Path = DEFAULT_CONFIG) -> int:
+    """Position of the gripper in the state/action vector, read from the hardware config.
+    state/action 벡터에서 그리퍼의 위치. 하드웨어 설정에서 읽는다.
+
+    Hardware-dependent, so it lives in configs/so101.yaml and not here.
+    하드웨어 의존 값이므로 여기가 아니라 configs/so101.yaml 에 있다.
+    """
+    with Path(config_path).open(encoding="utf-8") as fh:
+        joints = yaml.safe_load(fh)["joints"]
+    for j in joints:
+        if j["name"] == "gripper":
+            return int(j["index"])
+    raise KeyError(f"{config_path} 의 joints 에 'gripper' 가 없다")
+
+
+_GRIPPER = gripper_index()
 
 
 def training_target(
@@ -103,6 +134,11 @@ def training_target(
     """
     if action_space == "joint_delta":
         return action - state
+    if action_space == "joint_delta_gripper_abs":
+        target = action - state
+        target = target.clone()
+        target[..., _GRIPPER] = action[..., _GRIPPER]
+        return target
     if action_space == "joint_absolute":
         return action
     raise ValueError(f"action_space 는 {ACTION_SPACES} 중 하나여야 한다: {action_space!r}")
@@ -149,6 +185,11 @@ def to_action(
         raw = raw * target_std + target_mean
     if action_space == "joint_delta":
         return state + raw
+    if action_space == "joint_delta_gripper_abs":
+        out = state + raw
+        out = out.clone()
+        out[..., _GRIPPER] = raw[..., _GRIPPER]
+        return out
     if action_space == "joint_absolute":
         return raw
     raise ValueError(f"action_space 는 {ACTION_SPACES} 중 하나여야 한다: {action_space!r}")
@@ -181,7 +222,7 @@ class BCNet(nn.Module):
             raise ValueError(
                 f"action_space 는 {ACTION_SPACES} 중 하나여야 한다: {self.action_space!r}"
             )
-        if self.action_space == "joint_delta" and not self.use_state:
+        if self.action_space.startswith("joint_delta") and not self.use_state:
             raise ValueError(
                 "joint_delta 는 출력에 state 를 더해 행동을 만든다. use_state=false 로는 "
                 "학습 목표와 추론이 어긋난다"

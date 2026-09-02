@@ -90,6 +90,7 @@ def repeat(
     eval_seed_base: int,
     device: str,
     jitter: float,
+    epochs: int | None = None,
 ) -> list[RunResult]:
     """Train `runs` times, score each, and collect the results.
     `runs` 회 학습하고 각각 채점해 결과를 모은다."""
@@ -98,8 +99,11 @@ def repeat(
         seed = seed_base + i
         ckpt = AI_ROOT / "checkpoints" / "bc" / f"{data.name}_seed{seed}.pt"
 
-        _run([sys.executable, "tools/train_bc.py", "--data", str(data),
-              "--seed", str(seed), "--out", str(ckpt), "--device", device, "--log"])
+        train_cmd = [sys.executable, "tools/train_bc.py", "--data", str(data),
+                     "--seed", str(seed), "--out", str(ckpt), "--device", device, "--log"]
+        if epochs is not None:
+            train_cmd += ["--epochs", str(epochs)]
+        _run(train_cmd)
         _run([sys.executable, "tools/eval_rollout.py", "--episodes", str(episodes),
               "--seed-base", str(eval_seed_base), "--jitter", str(jitter), "--render",
               "--policy-ckpt", str(ckpt), "--log"])
@@ -177,6 +181,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--runs", type=int, default=GATE_MIN_RUNS)
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="train_bc 에 그대로 넘긴다. 없으면 설정값(configs/train/bc.yaml)")
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed-base", type=int, default=0, help="학습 시드 시작값")
     parser.add_argument("--eval-seed-base", type=int, default=3000, help="평가 시드 블록")
@@ -199,6 +205,7 @@ def main() -> int:
     results = repeat(
         args.data,
         runs=args.runs,
+        epochs=args.epochs,
         episodes=args.episodes,
         seed_base=args.seed_base,
         eval_seed_base=args.eval_seed_base,
@@ -236,6 +243,7 @@ def main() -> int:
             conditions={
                 "data": str(args.data),
                 "runs": args.runs,
+                "epochs": args.epochs,
                 "episodes": args.episodes,
                 "train_seeds": [r.seed for r in results],
                 "eval_seed_base": args.eval_seed_base,
