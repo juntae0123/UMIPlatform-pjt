@@ -216,10 +216,13 @@ def main() -> None:
     rates: dict[str, float] = {}
     detail: dict[str, list[dict[str, Any]]] = {}
     privileged: dict[str, bool] = {}
+    action_space: str | None = None
 
     with MujocoPickEnv(cfg, render=args.render, object_jitter_m=args.jitter) as env:
         for policy in build_policies(env, args.replay_from, args.policy_ckpt):
             rate, results = evaluate(env, policy, seeds)
+            if policy.name == "bc":
+                action_space = getattr(policy, "action_space", "joint_absolute")
             rates[policy.name] = rate
             privileged[policy.name] = policy.uses_privileged_state
             detail[policy.name] = [r.__dict__ for r in results]
@@ -281,6 +284,14 @@ def main() -> None:
                 "jitter_m": args.jitter,
                 "render": args.render,
                 "config_sha": file_digest(DEFAULT_CONFIG),
+                # Without these a rollout number cannot be attributed to a
+                # checkpoint. "bc scored 25%" is not a finding if nobody can say
+                # which bc, trained in which action space.
+                # 이게 없으면 롤아웃 수치를 체크포인트에 귀속시킬 수 없다.
+                # 어느 bc 인지, 어느 행동 공간으로 학습된 것인지 말할 수 없으면
+                # "bc 가 25% 였다"는 발견이 아니다.
+                "policy_ckpt": str(args.policy_ckpt) if args.policy_ckpt else None,
+                "policy_action_space": action_space,
                 "gates": GATES,
                 "metric": "롤아웃 성공률 (validation loss 아님)",
             },
