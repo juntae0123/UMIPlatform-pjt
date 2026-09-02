@@ -69,5 +69,12 @@ data:
 
 checkpoint:
   dir: checkpoints/bc
-  save_best_on: val_loss      # ⚠️ "best" 는 학습이 안 망가졌다는 뜻일 뿐이다.
-                              #    성능 판정은 tools/eval_rollout.py 가 한다
+  # 주 체크포인트는 **마지막 epoch** 이다. val loss 가 가장 낮은 epoch 은
+  # `<이름>_bestval.pt` 로 따로 저장하고 참고용으로만 둔다.
+  #
+  # ⚠️ 실측 (2026-09-02): val 곡선이 평평한 200 epoch 실행에서 best-val 이
+  #    **epoch 1** 이었다. 그 체크포인트로 롤아웃을 돌려 "정책이 0% 다"라고
+  #    기록할 뻔했는데, 실제로는 학습되지 않은 신경망을 평가한 것이었다.
+  #    이 프로젝트는 val loss 가 "학습이 망가졌나"만 말한다고 규칙으로 박아뒀는데,
+  #    정작 체크포인트 선택을 그것이 하고 있었다.
+  keep_best_val: true
