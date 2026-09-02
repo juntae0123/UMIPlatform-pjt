@@ -40,51 +40,11 @@ from pathlib import Path
 from typing import Any
 
 from contract.episode import CONTRACT_VERSION
+from contract.ids import DESTINATIONS, SKILL_IDS, STATUSES, TIERS
 
 # The only place a skill identifier is defined. Everything else derives from this.
 # 스킬 식별자가 정의되는 유일한 자리. 나머지는 전부 여기서 파생된다.
-SKILL_IDS: tuple[str, ...] = (
-    "pick_place",
-    "sort_two",
-    "align_fixture",
-    "present_inspect",
-    "line_up",
-)
-
-DESTINATIONS: tuple[str, ...] = (
-    "left_tray",
-    "right_tray",
-    "fixture",
-    "origin",
-    "target_pose",
-)
-
 POLICY_KINDS: tuple[str, ...] = ("learned", "scripted")
-
-TIERS: tuple[str, ...] = ("tutorial", "demo")
-"""Which layer a skill belongs to, and they are not the same product claim.
-스킬이 어느 층에 속하는가. 둘은 같은 제품 주장이 아니다.
-
-  tutorial — 플랫폼에 미리 학습시켜 넣어둔 기본 제공 스킬. 범용 프리미티브
-  demo     — 특정 페르소나를 겨냥해 **시연 자리에서 추가하는** 스킬
-
-The product claim is not "we built five behaviours", it is "a user can add a new
-behaviour by demonstrating it". A tutorial skill demonstrates the platform; a
-demo skill demonstrates the claim. Showing five tutorial skills work is weaker
-evidence than showing one skill being added and then working.
-제품 주장은 "우리가 다섯 행동을 만들었다"가 아니라 "사용자가 시연으로 새 행동을
-추가할 수 있다"이다. 튜토리얼 스킬은 플랫폼을 보여주고, 데모 스킬은 그 주장을
-보여준다. 튜토리얼 다섯이 되는 것보다 하나가 추가되어 동작하는 것이 더 강한 근거다."""
-
-STATUSES: tuple[str, ...] = (
-    "planned",      # 정의만 있다. 데이터 없음
-    "collecting",   # 시연 수집 중
-    "training",     # 학습 중
-    "gate_failed",  # 학습했으나 게이트 미통과
-    "deployed",     # 게이트 통과, 배포됨
-)
-"""Where a skill actually stands. Five planned skills are not five skills.
-스킬이 실제로 어디까지 왔는가. 계획된 다섯은 다섯 개가 아니다."""
 
 # Gates. Fixed before any skill was registered.
 # 게이트. 스킬을 하나도 등록하기 전에 확정했다.
