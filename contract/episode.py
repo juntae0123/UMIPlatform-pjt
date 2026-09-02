@@ -206,11 +206,50 @@ def write_episode(ep: Episode, out_dir: Path) -> Path:
     return npz_path
 
 
+_LEGACY_WARNED: set[str] = set()
+
+
+def _fill_legacy(raw: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Let an older episode be read, but not silently.
+    옛 에피소드를 읽을 수는 있게 하되, 조용히는 아니게.
+
+    Reading old data and training on it are different acts. Diagnosing why a
+    policy failed means reading the very episodes it was trained on, and those
+    may predate the field that made the contract stricter. Refusing to read them
+    would make the diagnosis impossible without re-collecting first.
+    옛 데이터를 읽는 것과 그것으로 학습하는 것은 다른 행위다. 정책이 왜 실패했는지
+    진단하려면 그 정책이 학습한 바로 그 에피소드를 읽어야 하는데, 그 데이터는 계약을
+    더 엄격하게 만든 필드보다 먼저 만들어졌을 수 있다. 읽기를 거부하면 재수집 없이는
+    진단 자체가 불가능해진다.
+
+    So the guard stays where it belongs: `validate()` still rejects the filled-in
+    value, so nothing trains on it.
+    그래서 가드는 원래 자리에 둔다. `validate()` 는 채워 넣은 값을 여전히 거부하므로
+    이걸로 학습되는 일은 없다.
+    """
+    missing = [k for k in ("skill_id",) if k not in raw]
+    if missing:
+        version = raw.get("contract_version", "?")
+        key = f"{version}:{','.join(missing)}"
+        if key not in _LEGACY_WARNED:
+            _LEGACY_WARNED.add(key)
+            print(
+                f"⚠️ {path.name} 은 계약 {version} 로 기록돼 {missing} 필드가 없다. "
+                f"현행 계약은 {CONTRACT_VERSION} 다.\n"
+                "   읽기는 허용한다 — 진단에는 이 데이터가 필요하다. 다만 validate() 가 "
+                "거부하므로 학습에는 쓰이지 않는다."
+            )
+        for k in missing:
+            raw[k] = ""
+    return raw
+
+
 def read_episode(npz_path: Path) -> Episode:
     """Read back an episode written by :func:`write_episode`.
     write_episode 로 쓴 에피소드를 다시 읽는다."""
     meta_path = npz_path.with_suffix(".json")
-    meta = EpisodeMeta(**json.loads(meta_path.read_text(encoding="utf-8")))
+    raw = _fill_legacy(json.loads(meta_path.read_text(encoding="utf-8")), meta_path)
+    meta = EpisodeMeta(**raw)
     with np.load(npz_path) as z:
         images = {k[len("image__"):]: z[k] for k in z.files if k.startswith("image__")}
         return Episode(
