@@ -28,7 +28,14 @@ model:
   #    다른 곳에 있고 그 변위가 곧 정답 차이라, 신경망이 이미지를 볼 이유가 없었다.
   #    잔차로 바꾸면 그 86% 가 목표에서 사라지고, 남는 것(에피소드 간 차이 0.000773)은
   #    물체 위치를 알아야만 설명되는 몫이다. 그 크기는 틱당 이동량과 같은 규모다.
-  action_space: joint_delta   # joint_absolute | joint_delta
+  #
+  # ⚠️ 실측 근거 (2026-09-02, trace_execution 1편 외우기 검사):
+  #    joint_delta 에서 팔 관절 5개는 오차가 필요 이동량의 0.14~0.20배까지 내려갔지만
+  #    그리퍼는 1.07배 — 전혀 배우지 못했다. 그리퍼 명령은 에피소드당 두 번만 바뀌는
+  #    설정값이라 델타가 141스텝 중 124스텝에서 정확히 0 이다. L1 의 최적값은 중앙값(0)
+  #    이고 신경망은 그걸 배웠다. 폐루프에서 그리퍼가 열리지도 닫히지도 않았다.
+  #    → 그리퍼만 절대 명령으로 둔다 (joint_delta_gripper_abs).
+  action_space: joint_delta_gripper_abs   # joint_absolute | joint_delta | joint_delta_gripper_abs
 
 train:
   batch_size: 32

@@ -174,6 +174,12 @@ def main() -> int:
               f"· 비율 {b['ratio']}")
         print(f"  관절별 오차 {b['err_per_joint']}")
         print(f"  관절별 델타 {b['delta_per_joint']}")
+        per = [round(e / d, 3) if d > 1e-9 else float("nan")
+               for e, d in zip(b["err_per_joint"], b["delta_per_joint"])]
+        bad = [i for i, r in enumerate(per) if r == r and r >= B_RATIO_MAX]
+        print(f"  관절별 비율(오차÷델타) {per}"
+              + (f"  ← {B_RATIO_MAX} 이상: 관절 {bad}" if bad else ""))
+        b["ratio_per_joint"] = per
         print(f"  클립 {b['clipped']}")
         b_ok = b["ratio"] < B_RATIO_MAX
         print(f"  [B_teacher] {b['ratio']} < {B_RATIO_MAX} → "
@@ -183,11 +189,12 @@ def main() -> int:
         c = section_c(env, policy, ep, xy)
         rows = c["rows"]
         print("C 폐루프 — 롤아웃 관측이 기록과 언제 갈라지나")
-        print(f"  {'t':>4} {'state차':>10} {'image차':>10} {'action차':>10}")
+        print(f"  {'t':>4} {'state차':>10} {'image차':>10} {'action차(max)':>14}")
+        print("  (state·action 차는 6관절 중 최대, image 차는 두 카메라 평균 계조. B 절의 관절 평균과 단위가 다르다)")
         idx = sorted({0, 1, 2, 5, 10, 20, 40, 70, len(rows) - 1} & set(range(len(rows))))
         for i in idx:
             r = rows[i]
-            print(f"  {r['t']:>4} {r['state_diff']:>10.6f} {r['image_diff']:>10.4f} {r['action_diff']:>10.6f}")
+            print(f"  {r['t']:>4} {r['state_diff']:>10.6f} {r['image_diff']:>10.4f} {r['action_diff']:>14.6f}")
         r0 = rows[0]
         c_ok = r0["state_diff"] < C_STATE_MAX and r0["image_diff"] < C_IMAGE_MAX
         print(f"  [C_obs_t0] state {r0['state_diff']:.6f} < {C_STATE_MAX} · "
@@ -195,15 +202,29 @@ def main() -> int:
               f"{'통과 — 첫 관측은 기록과 같다' if c_ok else '**실패 — 롤아웃의 첫 관측부터 기록과 다르다**'}")
         print(f"  폐루프 성공 {c['success']} · 상승 {c['lift_cm']}cm")
 
+    # Judgement only. Which of A/B/C failed, with the numbers that say so. The
+    # closed-loop outcome is printed beside it because a B ratio of 0.5 with a
+    # successful rollout and a B ratio of 1.03 with the arm frozen are different
+    # facts, and the first version of this block called both "nothing transferred".
+    # 판정만 낸다. A/B/C 중 무엇이 미달인지와 그 수치. 폐루프 결과를 옆에 두는 이유는
+    # B 비율 0.5 에 롤아웃 성공과 B 비율 1.03 에 팔 정지가 다른 사실인데, 이 블록의 첫
+    # 버전은 둘을 모두 "넘어오지 않았다"고 불렀기 때문이다.
     print("\n판정:")
     if not a_ok:
-        print("  원인 A — 실행 경로. 학습·표현 문제가 아니다.")
-    elif not b_ok:
-        print("  원인 B — 추론 시점의 네트워크. 학습된 것이 추론으로 넘어오지 않았다.")
-    elif not c_ok:
-        print("  원인 C(관측) — 롤아웃 관측이 기록과 다르다. 외운 정책이 처음부터 미지 입력을 본다.")
+        print("  A 미달 — 실행 경로가 기록을 재현하지 못한다. B·C 는 무효.")
     else:
-        print("  원인 C(누적) — 관측도 네트워크도 맞는데 폐루프에서 갈라진다. 위 표의 갈라지는 t 를 본다.")
+        print("  A 통과 — 실행 경로 정상.")
+        if b_ok:
+            print(f"  B 통과 — 비율 {b['ratio']}.")
+        else:
+            print(f"  B 미달 — 비율 {b['ratio']} (기준 {B_RATIO_MAX}), 관절별 {b.get('ratio_per_joint')}."
+                  + ("  비율≈1 이면 학습된 것이 추론으로 넘어오지 않은 것이다"
+                     if b["ratio"] > 0.9 else "  비율이 1 보다 뚜렷히 낮으면 덜 학습된 것이다"))
+        if c_ok:
+            print("  C(t=0) 통과 — 첫 관측이 기록과 같다.")
+        else:
+            print("  C(t=0) 미달 — 롤아웃 관측이 기록과 다르다. 외운 정책이 처음부터 미지 입력을 본다.")
+        print(f"  폐루프: {'성공' if c['success'] else '실패'} · 상승 {c['lift_cm']}cm (n=1, 기록 조건 고정)")
 
     if args.log:
         rec = log_run(

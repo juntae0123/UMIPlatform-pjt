@@ -54,7 +54,16 @@ def split_indices(n: int, val_fraction: float, seed: int) -> tuple[list[int], li
     결정적인 train/val 분할."""
     rng = np.random.default_rng(seed)
     idx = rng.permutation(n)
-    n_val = max(1, int(round(n * val_fraction))) if n > 1 else 0
+    # val_fraction 0 means exactly that: no held-out samples. The memorisation
+    # test needs the network to have seen every step of the episode it is then
+    # asked to reproduce -- a forced single held-out sample would make one step
+    # of the trace unreadable for no reason.
+    # val_fraction 0 은 말 그대로 0 이다 — 홀드아웃 없음. 외우기 검사는 재현을 요구할
+    # 에피소드의 모든 스텝을 신경망이 봤어야 하는데, 강제 홀드아웃 1개가 있으면
+    # 추적의 한 스텝이 이유 없이 읽을 수 없게 된다.
+    if val_fraction <= 0.0 or n <= 1:
+        return idx.tolist(), []
+    n_val = max(1, int(round(n * val_fraction)))
     return idx[n_val:].tolist(), idx[:n_val].tolist()
 
 
@@ -152,6 +161,8 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=None, help="설정값을 덮어쓴다")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--val-fraction", type=float, default=None,
+                        help="설정값을 덮어쓴다. 0 이면 홀드아웃 없음 (외우기 검사용)")
     parser.add_argument("--seed", type=int, default=None,
                         help="설정값을 덮어쓴다. 학습 3회 반복 시 서로 다른 값을 준다")
     parser.add_argument("--out", type=Path, default=None, help="체크포인트 경로")
@@ -183,7 +194,11 @@ def main() -> int:
 
     print(dataset.summary())
 
-    tr_idx, va_idx = split_indices(len(dataset), float(t["val_fraction"]), seed)
+    val_fraction = float(args.val_fraction if args.val_fraction is not None
+                         else t["val_fraction"])
+    tr_idx, va_idx = split_indices(len(dataset), val_fraction, seed)
+    print(f"분할: train {len(tr_idx)} / val {len(va_idx)} (val_fraction {val_fraction})"
+          + ("  ⚠️ 홀드아웃 없음 — 외우기 검사 전용. 일반화 수치가 아니다" if not va_idx else ""))
     loaders = {
         "train": DataLoader(Subset(dataset, tr_idx), batch_size=batch_size, shuffle=True,
                             num_workers=int(t["num_workers"]), collate_fn=collate),
@@ -248,7 +263,10 @@ def main() -> int:
     # 행동 공간은 설정 한 줄이지만 손실의 의미 자체를 정한다. 이게 안 먹으면 몇 시간을
     # 엉뚱한 공간에서 학습하고도 손실은 멀쩡해 보인다. 그래서 가정하지 않고 출력한다.
     print(f"행동 공간: {model.action_space}", end="")
-    if model.action_space == "joint_delta":
+    if model.action_space == "joint_delta_gripper_abs":
+        print("  — 팔 관절은 action - state 잔차, 그리퍼는 절대 명령")
+        print("  ⚠️ 손실 값을 절대 목표 학습분과 비교하지 마라. 크기가 두 자릿수 다르다")
+    elif model.action_space == "joint_delta":
         print("  — 목표는 action - state 잔차. 출력에 state 를 더해 행동을 만든다")
         print("  ⚠️ 손실 값을 절대 목표 학습분과 비교하지 마라. 크기가 두 자릿수 다르다")
     else:
