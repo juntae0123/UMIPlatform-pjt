@@ -24,13 +24,15 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from pathlib import Path
+
 from paths import DEFAULT_CONFIG, DEFAULT_SCENE
 from policy.base import Policy
 from policy.baselines import HoldPolicy, ReplayPolicy, ScriptedPickPolicy, ZeroPolicy
 from sim.mujoco.build_scene import build_model, load_config
 from sim.mujoco.env import MujocoPickEnv
 
-POLICY_NAMES = ("none", "scripted", "hold", "zero", "replay")
+POLICY_NAMES = ("none", "scripted", "hold", "zero", "replay", "bc")
 
 
 def _check_display() -> None:
@@ -57,11 +59,27 @@ def _check_display() -> None:
         sys.exit(2)
 
 
-def build_policy(name: str, env: MujocoPickEnv, cfg: dict[str, Any]) -> Policy | None:
+def build_policy(
+    name: str,
+    env: MujocoPickEnv,
+    cfg: dict[str, Any],
+    ckpt: "Path | None" = None,
+) -> Policy | None:
     """Return the requested policy, or None for free inspection.
     요청한 정책을 반환한다. 자유 관찰이면 None."""
     if name == "none":
         return None
+    if name == "bc":
+        from policy.bc import BCPolicy
+
+        if ckpt is None:
+            print("⚠️ --policy bc 는 --policy-ckpt 가 필요하다.")
+            sys.exit(2)
+        pol = BCPolicy(ckpt)
+        print(f"학습 정책 로드: {pol.describe()}")
+        if pol.meta.get("trained_on") == "random_tensors":
+            print("⚠️ 이 체크포인트는 랜덤 텐서로 학습된 것이다. 보이는 동작에 의미가 없다.")
+        return pol
     if name == "scripted":
         return ScriptedPickPolicy(env)
     if name == "hold":
@@ -114,20 +132,32 @@ def watch(
     jitter_m: float,
     speed: float,
     cfg: dict[str, Any],
+    ckpt: "Path | None" = None,
 ) -> int:
     """Run rollouts at wall-clock speed inside a passive viewer.
     수동 뷰어 안에서 롤아웃을 실시간 속도로 돌린다."""
     import mujoco.viewer
 
+    # A vision policy must see real pixels. With render=False the observation
+    # carries zero-filled images of the correct shape, so the policy runs but on
+    # a blank world -- what you would watch is not the behaviour the rollout
+    # harness measures.
+    # 시각 정책은 실제 픽셀을 봐야 한다. render=False 면 관측에 올바른 shape 의
+    # 0 배열이 들어가서, 정책은 돌지만 빈 세계 위에서 돈다. 그러면 화면에 보이는
+    # 것은 롤아웃 harness 가 재는 그 동작이 아니다.
+    needs_pixels = policy_name == "bc"
+
     n_ok = 0
-    with MujocoPickEnv(cfg, render=False, object_jitter_m=jitter_m) as env:
-        policy = build_policy(policy_name, env, cfg)
+    with MujocoPickEnv(cfg, render=needs_pixels, object_jitter_m=jitter_m) as env:
+        policy = build_policy(policy_name, env, cfg, ckpt)
         assert policy is not None
         dt = 1.0 / env.control_rate_hz / max(speed, 1e-6)
         print(f"정책 {policy.name} · {episodes} 에피소드 · 물체 xy ±{jitter_m * 1000:.0f}mm "
               f"· {env.control_rate_hz:.0f}Hz × {speed:g}배속")
         if policy.uses_privileged_state:
             print("⚠️ 이 정책은 물체의 정답 위치를 시뮬에서 직접 읽는다. 실물에서는 돌지 않는다.")
+        if needs_pixels:
+            print("카메라 2대를 매 틱 렌더한다 — 실시간보다 느릴 수 있다. --speed 로 맞춘다.")
         print("스페이스 일시정지 · Tab 카메라 전환 · 창을 닫으면 종료\n")
 
         with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
@@ -175,6 +205,8 @@ def main() -> int:
                         help="물체 xy 무작위 범위 (m)")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="1.0 이 실시간. 2 면 2배속, 0.5 면 절반 속도")
+    parser.add_argument("--policy-ckpt", type=Path, default=None,
+                        help="--policy bc 일 때 볼 체크포인트")
     args = parser.parse_args()
 
     _check_display()
@@ -183,7 +215,15 @@ def main() -> int:
     if args.policy == "none":
         free_look(cfg)
         return 0
-    return watch(args.policy, args.episodes, args.seed_base, args.jitter, args.speed, cfg)
+    return watch(
+        args.policy,
+        args.episodes,
+        args.seed_base,
+        args.jitter,
+        args.speed,
+        cfg,
+        args.policy_ckpt,
+    )
 
 
 if __name__ == "__main__":
