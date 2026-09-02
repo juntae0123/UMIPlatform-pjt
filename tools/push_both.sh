@@ -16,8 +16,9 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-MIRROR_BRANCH="ai-standalone"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"      # 팀 GitLab 쪽 브랜치 (ai)
+MIRROR_LOCAL="ai-standalone"                    # split 결과를 담을 로컬 브랜치
+MIRROR_REMOTE="master"                          # GitHub 미러의 기본 브랜치
 
 # Only tracked changes block the push. Untracked files are not going anywhere --
 # refusing because of one is refusing for a reason that does not exist.
@@ -51,12 +52,12 @@ fi
 
 echo
 echo "=============================================="
-echo " 2/2  GitHub 미러 (gh main) — AI/ 만"
+echo " 2/2  GitHub 미러 (gh ${MIRROR_REMOTE}) — AI/ 만"
 echo "=============================================="
-git branch -D "${MIRROR_BRANCH}" >/dev/null 2>&1 || true
-git subtree split --prefix=AI -b "${MIRROR_BRANCH}" -q
-echo "AI/ 커밋 $(git rev-list --count "${MIRROR_BRANCH}") 개"
-git push gh "${MIRROR_BRANCH}:main" --force
+git branch -D "${MIRROR_LOCAL}" >/dev/null 2>&1 || true
+git subtree split --prefix=AI -b "${MIRROR_LOCAL}" -q
+echo "AI/ 커밋 $(git rev-list --count "${MIRROR_LOCAL}") 개"
+git push gh "${MIRROR_LOCAL}:${MIRROR_REMOTE}" --force
 
 echo
-echo "완료. GitLab ${BRANCH} · GitHub main 둘 다 최신이다."
+echo "완료. GitLab ${BRANCH} · GitHub ${MIRROR_REMOTE} 둘 다 최신이다."
