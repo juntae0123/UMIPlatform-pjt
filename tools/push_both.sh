@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Push to the team GitLab and to the personal GitHub mirror in one step.
-# 팀 GitLab 과 개인 GitHub 미러에 한 번에 올린다.
+# Push to the team remote and, if configured, to a personal mirror in one step.
+# 팀 원격과, 설정돼 있으면 개인 미러에 한 번에 올린다.
 #
 # The mirror is a subtree split of AI/, so its history is the AI-part commits and
 # nothing else. `subtree split` recomputes hashes every time, so the mirror push
@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"      # 팀 GitLab 쪽 브랜치 (ai)
 MIRROR_LOCAL="ai-standalone"                    # split 결과를 담을 로컬 브랜치
-MIRROR_REMOTE="main"                             # GitHub 미러의 기본 브랜치
+MIRROR_REMOTE="main"                             # 개인 미러의 기본 브랜치
 
 # Only tracked changes block the push. Untracked files are not going anywhere --
 # refusing because of one is refusing for a reason that does not exist.
@@ -45,14 +45,14 @@ git push origin "${BRANCH}"
 
 if ! git remote get-url gh >/dev/null 2>&1; then
   echo
-  echo "⚠️ 리모트 'gh' 가 없다. GitHub 미러는 건너뛴다."
-  echo "   추가하려면: git remote add gh https://github.com/juntae0123/UMIPlatform-pjt.git"
+  echo "· 리모트 'gh' 가 없다. 개인 미러는 건너뛴다."
+  echo "   추가하려면: git remote add gh <개인 미러 저장소 URL>"
   exit 0
 fi
 
 echo
 echo "=============================================="
-echo " 2/2  GitHub 미러 (gh ${MIRROR_REMOTE}) — AI/ 만"
+echo " 2/2  개인 미러 (gh ${MIRROR_REMOTE}) — AI/ 만"
 echo "=============================================="
 git branch -D "${MIRROR_LOCAL}" >/dev/null 2>&1 || true
 git subtree split --prefix=AI -b "${MIRROR_LOCAL}" -q
@@ -60,4 +60,4 @@ echo "AI/ 커밋 $(git rev-list --count "${MIRROR_LOCAL}") 개"
 git push gh "${MIRROR_LOCAL}:${MIRROR_REMOTE}" --force
 
 echo
-echo "완료. GitLab ${BRANCH} · GitHub ${MIRROR_REMOTE} 둘 다 최신이다."
+echo "완료. origin/${BRANCH} · gh/${MIRROR_REMOTE} 최신."
