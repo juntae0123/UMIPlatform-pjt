@@ -34,6 +34,7 @@ from contract.episode import (
     write_episode,
 )
 
+from contract.ids import SKILL_IDS
 from sim.mujoco.build_scene import DEFAULT_CONFIG, build_model, load_config, normalize
 from tracking.exp_log import _git_rev, file_digest, log_run
 from sim.mujoco.grasp import contact_on_object, gripper_geom_ids
@@ -118,6 +119,7 @@ def collect_one(
     episode_id: str,
     object_xy: tuple[float, float],
     author: str,
+    skill_id: str,
 ) -> Episode | None:
     """Collect one scripted pick episode, or None if the pose is unreachable.
     스크립트 파지 에피소드 하나를 수집한다. 자세가 도달 불가면 None."""
@@ -176,6 +178,7 @@ def collect_one(
 
     meta = EpisodeMeta(
         episode_id=episode_id,
+        skill_id=skill_id,
         task="pick_cube_2cm",
         source="sim",
         success=success,
@@ -204,6 +207,13 @@ def main() -> None:
     parser.add_argument("--jitter", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=Path("datasets/sim_pick_v0"))
+    parser.add_argument(
+        "--skill-id",
+        type=str,
+        required=True,
+        choices=list(SKILL_IDS),
+        help="이 수집분이 어느 스킬의 시연인가. 계약 필수 필드다",
+    )
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
     parser.add_argument("--log", action="store_true")
     args = parser.parse_args()
@@ -221,7 +231,13 @@ def main() -> None:
         for i in range(args.episodes):
             xy = base_xy + rng.uniform(-args.jitter, args.jitter, size=2)
             ep = collect_one(
-                cfg, model, renderer, f"ep_{i:05d}", (float(xy[0]), float(xy[1])), args.author
+                cfg,
+                model,
+                renderer,
+                f"ep_{i:05d}",
+                (float(xy[0]), float(xy[1])),
+                args.author,
+                args.skill_id,
             )
             if ep is None:
                 skipped += 1
@@ -243,6 +259,7 @@ def main() -> None:
         args.out,
         extra={
             "collected_by": args.author,
+            "skill_id": args.skill_id,
             "jitter_m": args.jitter,
             "seed": args.seed,
             "scripted": True,
@@ -270,6 +287,7 @@ def main() -> None:
                 author=args.author,
                 issue="S15P21A103-64",
                 conditions={
+                    "skill_id": args.skill_id,
                     "episodes_requested": args.episodes,
                     "jitter_m": args.jitter,
                     "seed": args.seed,

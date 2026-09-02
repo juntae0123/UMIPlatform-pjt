@@ -34,7 +34,13 @@ from typing import Any
 
 import numpy as np
 
-CONTRACT_VERSION = "0.1.0-provisional"
+from contract.ids import SKILL_IDS
+
+# 0.2.0 (2026-09-02): EpisodeMeta.skill_id 추가, SKILL_IDS enum 강제.
+# 0.1.0 데이터는 이 버전에서 거부된다 — 당시 수집분은 시뮬 스크립트 98편뿐이고
+# 재수집에 20분이면 된다. 실시연 데이터가 0편인 지금이 바꿀 수 있는 마지막 구간에
+# 가깝다. 750편을 모은 뒤 바꾸면 그때는 전량 폐기다.
+CONTRACT_VERSION = "0.2.0-provisional"
 
 IMAGE_SHAPE = (3, 224, 224)  # CHW uint8
 STATE_DIM = 6
@@ -58,6 +64,17 @@ class EpisodeMeta:
     에피소드를 쓸 수 있는지 판단하는 데 필요한 전부."""
 
     episode_id: str
+    # Which of the five skills this demonstration belongs to. Constrained to
+    # `SKILL_IDS` because four parties -- the platform, the user's click, the
+    # VLM's selection and the robot's execution -- have to name the same thing,
+    # and one of them is a language model that will invent a sixth if nothing
+    # stops it.
+    # 이 시연이 다섯 스킬 중 어느 것인가. `SKILL_IDS` 로 제한한다. 플랫폼·사용자
+    # 클릭·VLM 선택·로봇 실행 네 주체가 같은 것을 같은 이름으로 불러야 하는데,
+    # 그중 하나는 막지 않으면 여섯 번째를 지어내는 언어모델이다.
+    skill_id: str
+    # Free text for humans. `skill_id` is what machines compare.
+    # 사람이 읽는 자유 문자열. 기계가 대조하는 것은 `skill_id` 다.
     task: str
     source: str  # "sim" | "real"
     success: bool
@@ -151,6 +168,12 @@ def validate(ep: Episode, *, strict_range: bool = True) -> list[str]:
                 f"{expected * 1000:.2f}ms (>20%)"
             )
 
+    if ep.meta.skill_id not in SKILL_IDS:
+        problems.append(
+            f"skill_id {ep.meta.skill_id!r} 이 {SKILL_IDS} 에 없다 "
+            "— 어느 스킬의 시연인지 알 수 없는 에피소드는 학습에 쓸 수 없다"
+        )
+
     if ep.meta.contract_version != CONTRACT_VERSION:
         problems.append(
             f"contract_version {ep.meta.contract_version!r} != {CONTRACT_VERSION!r}"
@@ -219,6 +242,7 @@ def write_dataset_index(out_dir: Path, extra: dict[str, Any] | None = None) -> P
             "meaning": "목표 관절각 5개 + 그리퍼, 정규화된 값",
         },
         "action_timestamp": {"shape": [], "dtype": "float64", "unit": "s"},
+        "skill_ids_allowed": list(SKILL_IDS),
         "joint_order": [
             "shoulder_pan", "shoulder_lift", "elbow_flex",
             "wrist_flex", "wrist_roll", "gripper",

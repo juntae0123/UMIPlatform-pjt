@@ -14,8 +14,8 @@ set -euo pipefail
 GPU="${1:-0}"
 N_COLLECT="${2:-100}"
 N_EVAL=20
-DATASET="datasets/sim_pick_v1"
-CKPT="checkpoints/bc/bc_sim_pick_v1.pt"
+DATASET="datasets/sim_pick_v2"   # 계약 0.2.0 (skill_id 필수). v1 은 0.1.0 이라 무효
+CKPT="checkpoints/bc/bc_sim_pick_v2.pt"
 
 export MUJOCO_GL=egl
 export CUDA_VISIBLE_DEVICES="${GPU}"
@@ -60,7 +60,8 @@ elif [ "${N_HAVE}" -gt 0 ]; then
   echo "      rm -rf ${DATASET}"
   exit 1
 else
-  python tools/collect_sim.py --episodes "${N_COLLECT}" --jitter 0.05 --out "${DATASET}" --log
+  python tools/collect_sim.py --episodes "${N_COLLECT}" --jitter 0.05 \
+    --skill-id pick_place --out "${DATASET}" --log
 fi
 
 echo "[2/5] 계약 검증 — 위반이 하나라도 있으면 학습하지 않는다"
