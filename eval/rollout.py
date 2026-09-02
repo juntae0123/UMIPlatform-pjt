@@ -66,10 +66,26 @@ class RolloutResult:
     object_xy: tuple[float, float]
 
 
-def rollout(env: MujocoPickEnv, policy: Policy, seed: int) -> RolloutResult:
+def rollout(
+    env: MujocoPickEnv,
+    policy: Policy,
+    seed: int,
+    object_xy: tuple[float, float] | None = None,
+) -> RolloutResult:
     """Run one episode to completion or to the tick limit.
-    에피소드 하나를 완료 또는 틱 제한까지 돌린다."""
-    obs = env.reset(seed=seed)
+    에피소드 하나를 완료 또는 틱 제한까지 돌린다.
+
+    `object_xy` pins the object instead of drawing it from the seed. It exists for
+    one job: checking whether a policy can reproduce the exact episode it was
+    trained on. Without it, "overfit one episode and replay it" silently becomes
+    "overfit one episode and test generalisation", because jitter=0 puts the object
+    at the config default rather than where that episode was recorded.
+    `object_xy` 는 시드에서 뽑는 대신 물체를 고정한다. 용도는 하나다 — 정책이 학습한
+    바로 그 에피소드를 재현할 수 있는지 확인하는 것. 이게 없으면 "1편 과적합 후 재생"이
+    조용히 "1편 과적합 후 일반화 검사"가 된다. jitter=0 은 물체를 그 에피소드가 기록된
+    자리가 아니라 config 기본값에 놓기 때문이다.
+    """
+    obs = env.reset(seed=seed, object_xy=object_xy)
     policy.reset(seed=seed)
     obj = env.object_position()
     success = False
@@ -90,7 +106,10 @@ def rollout(env: MujocoPickEnv, policy: Policy, seed: int) -> RolloutResult:
 
 
 def evaluate(
-    env: MujocoPickEnv, policy: Policy, seeds: list[int]
+    env: MujocoPickEnv,
+    policy: Policy,
+    seeds: list[int],
+    object_xy: tuple[float, float] | None = None,
 ) -> tuple[float, list[RolloutResult]]:
     """Run one policy over a fixed seed list and return its success rate.
     고정된 시드 목록으로 정책 하나를 돌리고 성공률을 반환한다.
@@ -100,7 +119,7 @@ def evaluate(
     모든 정책이 **같은** 시드를 본다. 즉 같은 물체 배치를 본다.
     다른 시드로 얻은 성공률끼리 비교하는 것은 비교가 아니다.
     """
-    results = [rollout(env, policy, s) for s in seeds]
+    results = [rollout(env, policy, s, object_xy) for s in seeds]
     return sum(r.success for r in results) / len(results), results
 
 
@@ -197,6 +216,15 @@ def main() -> None:
                         help="dataset dir to take the replay trajectory from")
     parser.add_argument("--replay-tolerance", action="store_true",
                         help="also measure how far the object may move before replay fails")
+    parser.add_argument(
+        "--object-xy", type=float, nargs=2, default=None, metavar=("X", "Y"),
+        help="물체를 이 좌표에 고정한다. 1편 과적합 재현 검사용 "
+             "(에피소드 json 의 notes.object_init_xy 값을 넣는다)",
+    )
+    parser.add_argument(
+        "--from-episode", type=Path, default=None,
+        help="이 에피소드가 기록된 물체 위치에서 평가한다. --object-xy 를 자동으로 채운다",
+    )
     parser.add_argument("--policy-ckpt", type=Path, default=None,
                         help="학습 정책 체크포인트. baseline 과 같은 조건으로 함께 채점한다")
     parser.add_argument("--render", action="store_true",
@@ -207,6 +235,23 @@ def main() -> None:
 
     cfg: dict[str, Any] = load_config()
     seeds = [args.seed_base + i for i in range(args.episodes)]
+
+    object_xy: tuple[float, float] | None = None
+    if args.from_episode is not None:
+        import json as _json
+
+        meta = _json.loads(args.from_episode.with_suffix(".json").read_text(encoding="utf-8"))
+        xy = meta["notes"]["object_init_xy"]
+        object_xy = (float(xy[0]), float(xy[1]))
+        print(f"물체를 {args.from_episode.name} 이 기록된 위치 "
+              f"({object_xy[0]:+.4f}, {object_xy[1]:+.4f}) 에 고정한다")
+    elif args.object_xy is not None:
+        object_xy = (float(args.object_xy[0]), float(args.object_xy[1]))
+        print(f"물체를 ({object_xy[0]:+.4f}, {object_xy[1]:+.4f}) 에 고정한다")
+
+    if object_xy is not None and args.episodes > 1:
+        print(f"⚠️ 물체가 고정돼 있어 {args.episodes}회가 전부 같은 조건이다. "
+              "시뮬은 결정적이므로 성공/실패도 같다 — 표본이 아니다")
 
     print("게이트 기준 (결과 확인 전 확정):")
     for key, text in GATES.items():
@@ -220,7 +265,7 @@ def main() -> None:
 
     with MujocoPickEnv(cfg, render=args.render, object_jitter_m=args.jitter) as env:
         for policy in build_policies(env, args.replay_from, args.policy_ckpt):
-            rate, results = evaluate(env, policy, seeds)
+            rate, results = evaluate(env, policy, seeds, object_xy)
             if policy.name == "bc":
                 action_space = getattr(policy, "action_space", "joint_absolute")
             rates[policy.name] = rate
@@ -232,7 +277,9 @@ def main() -> None:
                 f"= {rate * 100:5.1f}%   평균 상승 {np.mean([r.lift_height_m for r in results]) * 100:5.2f}cm{mark}"
             )
 
-    print(f"\n조건: 물체 xy ±{args.jitter * 1000:.0f}mm, 시드 {seeds[0]}~{seeds[-1]}, "
+    where = (f"물체 고정 ({object_xy[0]:+.4f}, {object_xy[1]:+.4f})"
+             if object_xy is not None else f"물체 xy ±{args.jitter * 1000:.0f}mm")
+    print(f"\n조건: {where}, 시드 {seeds[0]}~{seeds[-1]}, "
           f"모든 정책이 동일 시드, 틱 제한 {MujocoPickEnv(cfg, render=False).max_ticks}")
 
     tolerance: dict[str, Any] | None = None
@@ -282,6 +329,7 @@ def main() -> None:
                 "episodes": args.episodes,
                 "seeds": [seeds[0], seeds[-1]],
                 "jitter_m": args.jitter,
+                "object_xy_fixed": list(object_xy) if object_xy else None,
                 "render": args.render,
                 "config_sha": file_digest(DEFAULT_CONFIG),
                 # Without these a rollout number cannot be attributed to a
