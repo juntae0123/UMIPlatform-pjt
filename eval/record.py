@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -161,7 +162,10 @@ def main() -> int:
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed-base", type=int, default=1000)
     parser.add_argument("--jitter", type=float, default=0.05)
-    parser.add_argument("--out", type=Path, default=Path("out/clips"))
+    parser.add_argument(
+        "--out", type=Path, default=Path("out/download"),
+        help="기본값 out/download — 내려받을 것만 여기 모은다. 그 외 산출물과 섞지 않는다",
+    )
     parser.add_argument("--camera", type=str, default="cam_front")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -207,6 +211,36 @@ def main() -> int:
                 )
         finally:
             renderer.close()
+
+    # A manifest, because a folder of mp4 files is not self-explanatory a week
+    # later. The filename carries the outcome; this carries what to look for.
+    # 목록 파일을 함께 쓴다. mp4 가 담긴 폴더는 일주일 뒤에 스스로를 설명하지 못한다.
+    # 파일명은 결과를 담고, 이 파일은 무엇을 봐야 하는지를 담는다.
+    if written:
+        manifest = args.out / "목록.txt"
+        lines = [
+            f"롤아웃 영상 — {policy.name} · {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "",
+            f"조건: 물체 위치 무작위 ±{args.jitter * 1000:.0f}mm · 시드 {seeds[0]}~{seeds[-1]}",
+            f"      카메라 {args.camera} · {args.width}x{args.height} · {args.fps}fps",
+            "",
+            "파일명 읽는 법:",
+            "  <정책>_<ok|fail>_seed<시드>_xy<물체위치>_lift<올라간높이>.mp4",
+            "  같은 시드끼리는 물체 위치가 같다 — 나란히 틀어 비교할 수 있다",
+            "",
+            "파일:",
+        ]
+        for path in written:
+            lines.append(f"  {path.name}")
+        lines += [
+            "",
+            "⚠️ 이 영상들은 표본이 아니다. 여기 몇 편을 보고 성공률을 말하면 안 된다.",
+            "   성공률은 tools/eval_rollout.py 에서만 나온다 (고정 시드·동일 조건·게이트 판정).",
+        ]
+        if args.only_failures:
+            lines.append("⚠️ 이 실행은 --only-failures 로 실패만 골라 담았다.")
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"목록: {manifest}")
 
     print(f"\n{n_ok}/{len(seeds)} 성공 · 파일 {len(written)}개 → {args.out}")
     print(
