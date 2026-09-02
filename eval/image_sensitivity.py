@@ -54,8 +54,7 @@ GATE_IMAGE_RATIO = 0.30
 GATES: dict[str, str] = {
     "responds_to_image": (
         f"이미지 교체가 만드는 행동 변화 >= 정답 행동의 에피소드 간 변화 x {GATE_IMAGE_RATIO}. "
-        "못 넘으면 정책이 이미지를 사실상 무시하는 것이고, 행동 표현·손실 가중으로는 "
-        "고쳐지지 않는다."
+        "못 넘으면 정책이 이미지를 사실상 무시하는 것이다. 분모는 체크포인트의 회귀 공간을 따른다."
     ),
 }
 
@@ -85,6 +84,9 @@ class Sensitivity:
     per_joint_gt_delta: list[float]
     n_pairs: int
     n_timesteps: int
+    # Which space the checkpoint regresses -- decides the gate's denominator.
+    # 체크포인트가 회귀하는 공간. 게이트의 분모를 정한다.
+    action_space: str = "joint_absolute"
 
     def ratio(self) -> list[float]:
         return [
@@ -111,8 +113,42 @@ class Sensitivity:
         gt = float(np.mean(self.per_joint_gt))
         return st / gt if gt > 1e-12 else float("nan")
 
-    def passed(self) -> bool:
-        return self.overall_ratio() >= GATE_IMAGE_RATIO
+    def gate_ratio(self, action_space: str, gripper_idx: int) -> tuple[str, float]:
+        """The image/ground-truth ratio in the space the network actually regresses.
+        신경망이 실제로 회귀하는 공간에서의 이미지/정답 비율.
+
+        The denominator must be the between-episode variation of *what the network
+        outputs*. For an absolute policy that is the absolute action difference; for a
+        delta policy it is the delta difference, because the state term is added back
+        after the network and cannot depend on the image. Measuring a delta policy
+        against the absolute reference reports the state's share, not the image's —
+        it printed 0.033 for a policy whose arm output moved 0.68~0.96x the delta
+        reference under image swaps. Same threshold, correct denominator.
+        분모는 **신경망이 출력하는 것**의 에피소드 간 변화여야 한다. 절대 정책이면 절대
+        행동 차이, 델타 정책이면 델타 차이다 — state 항은 신경망 뒤에서 더해지므로
+        이미지에 의존할 수 없다. 델타 정책을 절대 기준으로 재면 이미지 몫이 아니라 상태
+        몫이 나온다. 이미지 교체에 팔 출력이 델타 기준의 0.68~0.96배 움직인 정책에
+        0.033 을 찍었다. 기준값은 그대로, 분모만 바로잡았다.
+
+        When the gripper is regressed absolutely its ground truth does not vary
+        across episodes at matched ticks (scripted timing), so it is excluded from the
+        ratio and reported on its own.
+        그리퍼를 절대로 회귀하면 같은 틱의 정답이 에피소드 간에 변하지 않으므로(스크립트
+        타이밍) 비율에서 빼고 따로 보고한다.
+        """
+        img = np.asarray(self.per_joint_image, dtype=float)
+        if action_space == "joint_absolute":
+            gt = np.asarray(self.per_joint_gt, dtype=float)
+            label = "정답 절대차"
+        else:
+            gt = np.asarray(self.per_joint_gt_delta, dtype=float)
+            label = "정답 델타차"
+        if action_space == "joint_delta_gripper_abs":
+            keep = [i for i in range(len(img)) if i != gripper_idx]
+            img, gt = img[keep], gt[keep]
+            label += "(팔 5관절)"
+        g = float(gt.mean())
+        return label, (float(img.mean()) / g if g > 1e-12 else float("nan"))
 
 
 def _obs(images: dict[str, np.ndarray], state: np.ndarray, t: float) -> Observation:
@@ -183,6 +219,7 @@ def measure(
         per_joint_gt_delta=[float(v) for v in np.mean(d_gt_delta, axis=0)],
         n_pairs=len(d_image),
         n_timesteps=len(steps),
+        action_space=policy.action_space,
     )
 
 
@@ -236,53 +273,24 @@ def main() -> int:
     print(format_report(s, cfg))
     print(f"\n교체 쌍 {s.n_pairs}개")
 
-    ratio = s.overall_ratio()
+    from policy.bc import gripper_index
+
+    space = s.action_space
+    g_idx = gripper_index()
+    label, ratio = s.gate_ratio(space, g_idx)
     print("\n게이트 판정:")
     print(
-        f"  [responds_to_image] 이미지/정답 {ratio:.3f} >= {GATE_IMAGE_RATIO:.2f} → "
-        f"{'통과' if s.passed() else '**실패**'}"
+        f"  [responds_to_image] 이미지/{label} {ratio:.3f} >= {GATE_IMAGE_RATIO:.2f} → "
+        f"{'통과 — 정책 출력이 이미지에 반응한다' if ratio >= GATE_IMAGE_RATIO else '**실패 — 정책이 이미지를 사실상 무시한다**'}"
     )
+    print(f"  회귀 공간 {space} 에 맞는 분모를 썼다. 참고: 절대 기준 {s.overall_ratio():.3f} · "
+          f"델타 기준(전 관절) {s.delta_ratio():.3f} · 상태가 설명하는 절대 목표 몫 {s.state_explains():.3f}")
+    if space == "joint_delta_gripper_abs":
+        gi, gs, gg = s.per_joint_image[g_idx], s.per_joint_state[g_idx], s.per_joint_gt[g_idx]
+        print(f"  그리퍼(절대 회귀): 이미지 교체 {gi:.6f} · 상태 교체 {gs:.6f} · 같은 틱 정답 차이 {gg:.6f}"
+              " — 정답이 틱에 고정돼 비율을 정의할 수 없다. 출력 흔들림 크기만 기록한다")
+    print("  ⚠️ 이 도구는 민감도를 잰다. 정확도가 아니다 — 반응한다고 맞게 반응하는 것은 아니다")
     print()
-    dr = s.delta_ratio()
-    se = s.state_explains()
-    print(f"  [참고] 상태만으로 설명되는 절대 목표의 몫: {se:.3f}")
-    print(f"  [참고] 잔차(action-state) 기준 이미지 기여도: {dr:.3f}")
-    print()
-
-    if s.passed():
-        print(
-            "정책이 이미지에 반응한다. 0% 의 원인은 '안 본다'가 아니라 '부정확하다'이므로 "
-            "행동 표현(델타)·손실 가중이 유효한 대책이다."
-        )
-    else:
-        print("정책이 절대 목표를 이미지 없이 설명하고 있다. 왜 그런지는 위 두 참고값이 가른다.")
-        if se >= 0.80:
-            print(
-                f"  · 상태만으로 절대 목표의 {se:.0%} 가 설명된다. 인코더가 죽은 것이 아니라 "
-                "**상태가 답을 지름길로 주고 있어 이미지를 볼 이유가 없었던 것**이다. "
-                "물체가 옮겨지면 팔도 다른 곳에 있고, 그 변위가 곧 정답 차이다."
-            )
-        if not np.isnan(dr):
-            if dr >= 0.30:
-                print(
-                    f"  · 잔차 기준으로는 이미지 기여도가 {dr:.3f} 다. **델타 행동 목표로 "
-                    "바꾸면 지름길이 사라지고 이미지가 설명해야 할 몫이 드러난다** — "
-                    "델타 행동만으로 유효할 가능성이 높다."
-                )
-            elif dr >= 0.10:
-                print(
-                    f"  · 잔차 기준 이미지 기여도 {dr:.3f} — 부분적이다. 델타 행동과 함께 "
-                    "상태 입력을 약화(드롭아웃)하는 것을 같이 재야 한다."
-                )
-            else:
-                print(
-                    f"  · 잔차 기준으로도 이미지 기여도가 {dr:.3f} 로 낮다. 델타 행동만으로는 "
-                    "부족하다. 인코더가 그래디언트를 받고 있는지부터 확인해야 한다."
-                )
-    print(
-        "\n⚠️ 교체된 (이미지, 상태) 쌍은 함께 나타난 적 없는 조합이다. 절대값이 아니라 "
-        "비율만 읽어라."
-    )
 
     if args.log:
         rec = log_run(
@@ -304,18 +312,21 @@ def main() -> int:
                 "per_joint_state": s.per_joint_state,
                 "per_joint_gt": s.per_joint_gt,
                 "ratio_per_joint": s.ratio(),
-                "overall_ratio": ratio,
+                "overall_ratio": s.overall_ratio(),
+                "gate_ratio": ratio,
+                "gate_reference": label,
+                "action_space": space,
                 "per_joint_gt_delta": s.per_joint_gt_delta,
                 "delta_ratio": s.delta_ratio(),
                 "state_explains": s.state_explains(),
-                "passed": s.passed(),
+                "passed": bool(ratio >= GATE_IMAGE_RATIO),
                 "n_pairs": s.n_pairs,
                 "n_timesteps": s.n_timesteps,
             },
         )
         print(f"\nEXP_LOG.jsonl 기록 (git {rec['git_rev']}, dirty={rec['git_dirty']})")
 
-    return 0 if s.passed() else 1
+    return 0 if ratio >= GATE_IMAGE_RATIO else 1
 
 
 if __name__ == "__main__":
