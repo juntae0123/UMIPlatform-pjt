@@ -137,6 +137,20 @@ def main() -> int:
 
     model = BCNet(cameras, cfg).to(device)
     n_params = model.n_params()
+
+    # The action space is a one-line config change that silently decides what the
+    # loss even means. If it does not take effect, training runs for hours in the
+    # wrong space and the loss looks fine. So it gets printed, not assumed.
+    # 행동 공간은 설정 한 줄이지만 손실의 의미 자체를 정한다. 이게 안 먹으면 몇 시간을
+    # 엉뚱한 공간에서 학습하고도 손실은 멀쩡해 보인다. 그래서 가정하지 않고 출력한다.
+    print(f"행동 공간: {model.action_space}", end="")
+    if model.action_space == "joint_delta":
+        print("  — 목표는 action - state 잔차. 출력에 state 를 더해 행동을 만든다")
+        print("  ⚠️ 손실 값을 절대 목표 학습분과 비교하지 마라. 크기가 두 자릿수 다르다")
+    else:
+        print("  — 목표는 절대 관절각")
+        print("  ⚠️ 실측상 이 공간에서는 상태만으로 정답의 86% 가 설명된다"
+              " (2026-09-02 image_sensitivity)")
     print(f"파라미터 {n_params:,}개 (~{n_params * 4 / 1024 / 1024:.1f}MB fp32)")
     print("⚠️ Jetson 8GB 에 VLM 과 함께 올라가야 한다 — 이슈 42 미검증\n")
 
