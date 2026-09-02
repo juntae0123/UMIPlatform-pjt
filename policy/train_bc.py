@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -57,15 +58,63 @@ def split_indices(n: int, val_fraction: float, seed: int) -> tuple[list[int], li
     return idx[n_val:].tolist(), idx[:n_val].tolist()
 
 
+@dataclass
+class TargetTransform:
+    """The one place that decides what the loss is computed against.
+    손실이 무엇을 대상으로 계산되는지를 정하는 유일한 자리.
+
+    It exists because it was optional and got left out. `run_epoch` took
+    `target_mean`/`target_std` as keyword defaults; the training call passed
+    `optimizer` and `grad_clip` positionally and omitted them, so training
+    regressed the raw delta while validation and inference assumed a
+    standardised one. Nothing raised. The train loss was printed in one unit and
+    compared against a baseline printed in another, and a policy that had learned
+    nothing looked like a policy that had memorised its episode. 🟢 2026-09-02
+    선택 인자였기 때문에 빠졌다. `run_epoch` 이 `target_mean`/`target_std` 를 기본값
+    키워드로 받았고, 학습 호출이 `optimizer` 와 `grad_clip` 을 위치로 넘기면서 둘을
+    누락했다. 그래서 학습은 raw 델타를 회귀하고 검증과 추론은 표준화된 것을 가정했다.
+    아무 곳에서도 예외가 나지 않았다. 학습 손실은 한 단위로 출력되고 다른 단위의
+    baseline 과 비교됐으며, 아무것도 배우지 못한 정책이 에피소드를 외운 정책처럼
+    보였다.
+
+    So it is now one required positional object instead of two optional keywords.
+    그래서 선택 키워드 두 개가 아니라 **필수 위치 인자 하나**로 바꿨다.
+    """
+
+    action_space: str
+    mean: torch.Tensor | None
+    std: torch.Tensor | None
+
+    def __call__(self, action: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+        """Actions and states in, the tensor the loss sees out.
+        행동·상태를 받아 손실이 보는 텐서를 낸다."""
+        target = training_target(action, state, self.action_space)
+        if self.mean is not None and self.std is not None:
+            target = (target - self.mean) / self.std
+        return target
+
+    def to(self, device: torch.device) -> "TargetTransform":
+        """Move the statistics to the training device.
+        통계를 학습 디바이스로 옮긴다."""
+        if self.mean is None or self.std is None:
+            return self
+        return TargetTransform(self.action_space, self.mean.to(device), self.std.to(device))
+
+    @property
+    def standardised(self) -> bool:
+        """Whether the loss is computed in standardised units.
+        손실이 표준화 단위로 계산되는가."""
+        return self.mean is not None and self.std is not None
+
+
 def run_epoch(
     model: BCNet,
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
+    target_fn: TargetTransform,
     optimizer: torch.optim.Optimizer | None = None,
     grad_clip: float = 0.0,
-    target_mean: torch.Tensor | None = None,
-    target_std: torch.Tensor | None = None,
 ) -> float:
     """One pass. `optimizer=None` means evaluation.
     한 바퀴. `optimizer=None` 이면 평가.
@@ -82,10 +131,7 @@ def run_epoch(
             images = {c: v.to(device) for c, v in images.items()}
             state, action = state.to(device), action.to(device)
             pred = model(images, state)
-            target = training_target(action, state, model.action_space)
-            if target_std is not None:
-                target = (target - target_mean) / target_std
-            loss = criterion(pred, target)
+            loss = criterion(pred, target_fn(action, state))
             if train:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -152,6 +198,14 @@ def main() -> int:
     # 숫자 여섯 개를 읽으려고 이미지 13,818장을 디코딩한다.
     t_mean = t_std = None
     baseline_norm = float("nan")
+    # Defined before the branch so the random-tensor path cannot reach the epoch
+    # loop without one. An undefined transform there would be a NameError at the
+    # first epoch, i.e. a crash instead of a silent unit mismatch -- but the point
+    # of this object is that neither is possible.
+    # 랜덤 텐서 경로가 이것 없이 epoch 루프에 도달할 수 없도록 분기 앞에서 정의한다.
+    target_fn = TargetTransform(
+        str(cfg["model"].get("action_space", "joint_absolute")), None, None
+    )
     if getattr(dataset, "episodes", None):
         acts = torch.from_numpy(
             np.concatenate([e.action for e in dataset.episodes], axis=0)
@@ -159,12 +213,17 @@ def main() -> int:
         sts = torch.from_numpy(
             np.concatenate([e.state for e in dataset.episodes], axis=0)
         ).float()
-        raw_target = training_target(acts, sts, str(cfg["model"].get("action_space", "joint_absolute")))
+        space = str(cfg["model"].get("action_space", "joint_absolute"))
+        raw_target = training_target(acts, sts, space)
         if bool(t.get("normalize_target", True)):
             t_mean, t_std = target_scale(raw_target)
-            scaled = (raw_target - t_mean) / t_std
-        else:
-            scaled = raw_target
+        # Built here and used by BOTH passes. The baseline below is computed
+        # through the same object, so the epoch losses and the reference they are
+        # read against cannot end up in different units.
+        # 여기서 만들어 **양쪽 패스**가 쓴다. 아래 baseline 도 같은 객체를 통과하므로,
+        # epoch 손실과 그것을 읽는 기준이 다른 단위가 될 수 없다.
+        target_fn = TargetTransform(space, t_mean, t_std)
+        scaled = target_fn(acts, sts)
         # What a network that always outputs zero would score, in the same units
         # the epoch losses are printed in. A loss without this reference cannot be
         # read: 0.0057 looked fine until it turned out zero-output scores 0.0075.
@@ -173,8 +232,14 @@ def main() -> int:
         baseline_norm = float(scaled.abs().mean())
 
     model = BCNet(cameras, cfg).to(device)
+    target_fn = target_fn.to(device)
     if t_mean is not None:
         t_mean, t_std = t_mean.to(device), t_std.to(device)
+    if model.action_space != target_fn.action_space:
+        raise ValueError(
+            f"손실 목표 공간({target_fn.action_space})과 모델 행동 공간"
+            f"({model.action_space})이 다르다. 체크포인트를 불러올 때 어긋난다"
+        )
     n_params = model.n_params()
 
     # The action space is a one-line config change that silently decides what the
@@ -194,6 +259,8 @@ def main() -> int:
         print(f"타겟 표준화: 켬 (관절별 std {[round(float(v), 5) for v in t_std.cpu()]})")
     else:
         print("타겟 표준화: 끔")
+    unit = "표준화 단위" if target_fn.standardised else "raw 델타 단위"
+    print(f"손실 단위: {unit} — train·val·아래 baseline 이 모두 이 단위다")
     if baseline_norm == baseline_norm:  # not NaN
         print(f"⚠️ 자명한 예측기(항상 0) 손실 = {baseline_norm:.5f}")
         print("   epoch 손실이 이 값 근처에서 멈추면 학습이 안 되고 있는 것이다."
@@ -213,10 +280,9 @@ def main() -> int:
     t0 = time.perf_counter()
 
     for ep in range(1, epochs + 1):
-        tr = run_epoch(model, loaders["train"], criterion, device, optimizer,
-                       float(t["grad_clip"]))
-        va = (run_epoch(model, loaders["val"], criterion, device,
-                           target_mean=t_mean, target_std=t_std)
+        tr = run_epoch(model, loaders["train"], criterion, device, target_fn,
+                       optimizer, float(t["grad_clip"]))
+        va = (run_epoch(model, loaders["val"], criterion, device, target_fn)
               if loaders["val"] is not None else float("nan"))
         history.append({"epoch": ep, "train_loss": tr, "val_loss": va})
         mark = ""
