@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"      # 팀 GitLab 쪽 브랜치 (ai)
 MIRROR_LOCAL="ai-standalone"                    # split 결과를 담을 로컬 브랜치
-MIRROR_REMOTE="master"                          # GitHub 미러의 기본 브랜치
+MIRROR_REMOTE="main"                             # GitHub 미러의 기본 브랜치
 
 # Only tracked changes block the push. Untracked files are not going anywhere --
 # refusing because of one is refusing for a reason that does not exist.
