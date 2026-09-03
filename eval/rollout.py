@@ -55,7 +55,13 @@ PRECISION_FAR_MM = 30.0
 # 실측 재생 허용오차에 맞춘 값이다. 결과가 나오게 하려고 고른 값이 아니다.
 CLOSE_OK_MM = 5.0     # 닫는 순간 이 안이면 위치는 충분하다
 CLOSE_BAD_MM = 10.0   # 이보다 멀면 닫는 순간의 위치 오차가 실패를 설명한다
-CLOSE_LAG_TICKS = 5   # 최근접 지점을 이보다 늦게 지나쳐 닫으면 타이밍 문제 (30Hz 기준 0.17s)
+# 지연(최근접 시점 → 닫는 시점)은 **판정 근거가 아니다.** 실측 2026-09-03 🟢:
+# scripted 는 지연 +30틱(>5틱 100%)인데 84% 성공하고, bc 는 +17틱인데 7% 다.
+# 최근접 시점은 접근 완료 시점이고 그 뒤 수십 틱은 하강·정렬 후 닫는 정상
+# 시퀀스다. 차이는 그 사이에 거리를 유지하는가다 — scripted 4.7mm 유지,
+# bc 5.1 -> 14.0mm 발산. 그래서 판정은 **닫는 순간의 절대 거리**로 한다.
+# 지연은 참고값으로만 출력한다.
+CLOSE_LAG_TICKS = 5   # 참고 표시용 문턱. 판정에 쓰지 않는다 (30Hz 기준 0.17s)
 GRIP_SPAN_MIN = 0.05  # 명령 진폭이 이보다 작으면 닫는 동작 자체가 없다
 GATES: dict[str, str] = {
     "floor": "학습 정책 성공률 > hold 성공률 + 20%p. 못 넘으면 정책이 무의미하다.",
@@ -470,17 +476,19 @@ def main() -> None:
         cb = sh["closing"]
         if cb.get("xy_at_close_median") is not None:
             cm, lg = cb["xy_at_close_median"], cb["lag_median"]
-            if lg > CLOSE_LAG_TICKS:
-                cread = (f"최근접 지점을 {lg:+.0f}틱 지나친 뒤 닫는다 → **타이밍 문제**. "
-                         "데이터가 고정 틱에 닫으라고 가르쳤을 가능성을 먼저 본다")
-            elif cm > CLOSE_BAD_MM:
-                cread = "닫는 순간의 위치 오차가 실패를 설명한다 → **정밀도 문제**"
+            drift = cm - sh["xy_median"]
+            if cm > CLOSE_BAD_MM:
+                cread = ("닫는 순간의 위치 오차가 실패를 설명한다 → **정밀도 문제**. "
+                         "실측 허용오차상 ±15mm 는 1/4 만 성공한다")
             elif cm <= CLOSE_OK_MM:
-                cread = ("닫는 순간 위치는 충분하다 (실측 ±5mm 4/4) → 실패 원인이 위치도 타이밍도 "
-                         "아니다. 파지력·접촉 형상을 봐야 한다")
+                cread = ("닫는 순간 위치는 충분하다 (실측 ±5mm 4/4) → 실패 원인이 위치가 "
+                         "아니다. 파지력·접촉 형상·도달 실패를 봐야 한다")
             else:
-                cread = "판정 유보 — 중간 영역"
-            print(f"  [closing_moment] 닫는 순간 {cm:.1f}mm · 지연 {lg:+.0f}틱 → {cread}")
+                cread = "판정 유보 — 중간 영역 (±10mm 3/4)"
+            print(f"  [closing_moment] 닫는 순간 {cm:.1f}mm → {cread}")
+            print(f"                  최근접({sh['xy_median']:.1f}mm) 대비 {drift:+.1f}mm · "
+                  f"지연 {lg:+.0f}틱 — **지연은 판정 근거가 아니다** "
+                  f"(scripted 는 +30틱에 84% 🟢). 유지하는가 발산하는가가 갈린다")
         elif cb["never_closed"]:
             print(f"  [closing_moment] 실패 {cb['never_closed']}건이 닫는 동작 자체를 하지 않았다 "
                   "→ 그리퍼 출력이 죽어 있다")
