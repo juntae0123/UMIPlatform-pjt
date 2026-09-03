@@ -58,6 +58,9 @@ train:
   # 체크포인트에 통계가 함께 저장된다. 없으면 원 출력을 행동으로 되돌릴 수 없다.
   normalize_target: true
   val_fraction: 0.2
+  # val 분할 단위. sample = 같은 에피소드의 다른 틱 (일반화를 재지 않는다 — 실측 val 0.043 에 롤아웃 5.7%)
+  #               episode = 에피소드 통째로 홀드아웃 (처음 보는 물체 위치. 롤아웃과 같은 질문)
+  val_split: episode         # sample | episode
   seed: 0
   grad_clip: 1.0
   num_workers: 0              # 윈도우/작은 데이터셋에서는 0 이 안전하다
