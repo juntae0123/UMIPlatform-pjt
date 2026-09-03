@@ -27,7 +27,7 @@ import numpy as np
 from sim.mujoco.build_scene import normalize
 from sim.base import Observation
 from sim.mujoco.env import MujocoPickEnv
-from sim.mujoco.kinematics import solve_pose_ik
+from sim.mujoco.kinematics import pick_waypoints, solve_pose_ik
 from policy.base import check_action
 
 
@@ -167,8 +167,16 @@ class ScriptedPickPolicy:
         return check_action(self._plan[idx], self.name)
 
     def _build_plan(self) -> list[np.ndarray]:
-        """Expand the pick waypoints into one action per control tick.
-        파지 경유점을 제어 틱당 행동 하나로 펼친다."""
+        """Expand the shared pick waypoints into one action per control tick.
+        공유 파지 웨이포인트를 제어 틱당 행동 하나로 펼친다.
+
+        The waypoints come from `pick_waypoints`, the same function the collector
+        uses. Before 2026-09-03 this method had its own copy and the two had
+        drifted (141 vs 165 ticks) -- the ceiling was not the demonstrator.
+        웨이포인트는 수집기와 **같은 함수** `pick_waypoints` 에서 온다. 2026-09-03
+        이전에는 이 메서드가 자기 사본을 갖고 있었고 둘이 갈라져 있었다(141 대 165틱)
+        — 상한선이 시연자와 다른 것이었다.
+        """
         cfg = self._cfg
         g = cfg["grasp"]
         env = self._env
@@ -177,36 +185,21 @@ class ScriptedPickPolicy:
         offset = np.asarray(g["pinch_offset_local"], dtype=float)
         axis = np.asarray(g["approach_axis"], dtype=float)
 
-        obj = env.object_position()
-        grasp_pt = obj + np.array([0.0, 0.0, float(g["grasp_z_offset_m"])])
-        approach = grasp_pt + np.array([0.0, 0.0, float(g["approach_height_m"])])
-        lift = grasp_pt + np.array([0.0, 0.0, float(g["lift_height_m"])])
-
         q_now = env.joint_positions()
         segments: list[tuple[np.ndarray, float, float]] = []
         seed_q = q_now
-        for target, grip, seconds in (
-            (approach, float(g["open_cmd"]), 1.2),
-            (grasp_pt, float(g["open_cmd"]), 1.0),
-        ):
-            res = solve_pose_ik(model, target, offset, axis, q_init=seed_q, wrist_roll=0.0)
+        for seg in pick_waypoints(cfg, env.object_position()):
+            if seg.target is None:
+                segments.append((seed_q, seg.grip, seg.seconds))
+                continue
+            res = solve_pose_ik(model, seg.target, offset, axis, q_init=seed_q, wrist_roll=0.0)
             if not res.ok:
-                # Unreachable: hold still rather than flail. The rollout will
-                # score this as a failure, which is the correct outcome.
-                # 도달 불가면 휘젓지 말고 정지한다. 롤아웃은 이를 실패로 채점하고,
-                # 그게 올바른 결과다.
+                # Unreachable: hold still rather than flail. The rollout scores
+                # this a failure, which is the correct outcome.
+                # 도달 불가면 휘젓지 말고 정지한다. 롤아웃은 실패로 채점하고 그게 맞다.
                 return [normalize(q_now, cfg)]
-            segments.append((res.qpos, grip, seconds))
+            segments.append((res.qpos, seg.grip, seg.seconds))
             seed_q = res.qpos
-
-        # Close on the object at the calibrated gap, then lift.
-        # 보정된 간격으로 물체를 잡고 들어올린다.
-        close_cmd = float(g["close_cmd"])
-        segments.append((seed_q, close_cmd, 1.0))
-        res = solve_pose_ik(model, lift, offset, axis, q_init=seed_q, wrist_roll=0.0)
-        if res.ok:
-            segments.append((res.qpos, close_cmd, 1.5))
-        segments.append((segments[-1][0], close_cmd, 0.8))
 
         plan: list[np.ndarray] = []
         q_prev = q_now.copy()
@@ -215,7 +208,6 @@ class ScriptedPickPolicy:
             for k in range(1, n + 1):
                 alpha = k / n
                 q = (1 - alpha) * q_prev[:5] + alpha * np.asarray(q_target[:5], dtype=float)
-                full = np.concatenate([q, [grip]])
-                plan.append(normalize(full, cfg))
+                plan.append(normalize(np.concatenate([q, [grip]]), cfg))
             q_prev = np.concatenate([np.asarray(q_target[:5], dtype=float), [grip]])
         return plan

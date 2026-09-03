@@ -19,6 +19,7 @@ and cannot be chosen independently of the other five.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import mujoco
 import numpy as np
@@ -51,6 +52,61 @@ class IKResult:
             and self.axis_error_deg < self.AXIS_TOL_DEG
             and self.within_limits
         )
+
+
+@dataclass(frozen=True)
+class PickSegment:
+    """One leg of the scripted pick: where to go, how to hold the jaws, how long.
+    스크립트 파지의 한 구간. 어디로 갈지, 턱을 어떻게 둘지, 얼마나 걸릴지.
+
+    `target is None` means hold the arm's current commanded pose -- used for the
+    dwell and for closing in place.
+    `target is None` 이면 팔의 현재 명령 자세를 유지한다. dwell 과 제자리 닫기에 쓴다.
+    """
+
+    target: np.ndarray | None
+    grip: float
+    seconds: float
+
+
+def pick_waypoints(cfg: dict[str, Any], obj_xyz: np.ndarray) -> list[PickSegment]:
+    """The one definition of the scripted demonstration.
+    스크립트 시연의 **유일한** 정의.
+
+    It lived in two places -- `data/collect.py` (collection) and
+    `policy/baselines.py` (evaluation) -- and they had already drifted: collection
+    produced 141 ticks, the evaluation baseline 165. That means the `scripted`
+    ceiling was not the demonstrator that made the data, and neither number alone
+    would have shown it. 🟢 2026-09-03
+    이 계획이 두 곳에 있었다 — `data/collect.py`(수집)와 `policy/baselines.py`(평가) —
+    그리고 **이미 갈라져 있었다**: 수집은 141틱, 평가 baseline 은 165틱을 냈다.
+    즉 `scripted` 상한선이 데이터를 만든 시연자와 같은 것이 아니었고, 어느 한쪽
+    수치만 봐서는 아무도 몰랐다.
+
+    Timing and the dwell come from `configs/so101.yaml` so the demonstrator can be
+    changed without touching code, and so a change shows up in `config_sha`.
+    타이밍과 dwell 은 `configs/so101.yaml` 에서 온다. 코드를 건드리지 않고 시연자를
+    바꿀 수 있고, 변경이 `config_sha` 에 남는다.
+    """
+    g = cfg["grasp"]
+    t = g.get("timing", {})
+    grasp_pt = np.asarray(obj_xyz, dtype=float) + np.array(
+        [0.0, 0.0, float(g["grasp_z_offset_m"])]
+    )
+    approach = grasp_pt + np.array([0.0, 0.0, float(g["approach_height_m"])])
+    lift = grasp_pt + np.array([0.0, 0.0, float(g["lift_height_m"])])
+    open_cmd, close_cmd = float(g["open_cmd"]), float(g["close_cmd"])
+
+    segs = [
+        PickSegment(approach, open_cmd, float(t.get("approach_s", 1.2))),
+        PickSegment(grasp_pt, open_cmd, float(t.get("descend_s", 1.0))),
+    ]
+    dwell_s = float(g.get("dwell_s", 0.0))
+    if dwell_s > 0.0:
+        segs.append(PickSegment(None, open_cmd, dwell_s))
+    segs.append(PickSegment(None, close_cmd, float(t.get("close_s", 1.0))))
+    segs.append(PickSegment(lift, close_cmd, float(t.get("lift_s", 1.5))))
+    return segs
 
 
 def grasp_point(model: mujoco.MjModel, data: mujoco.MjData, offset_local: np.ndarray) -> np.ndarray:
