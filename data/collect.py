@@ -38,7 +38,7 @@ from contract.ids import SKILL_IDS
 from sim.mujoco.build_scene import DEFAULT_CONFIG, build_model, load_config, normalize
 from tracking.exp_log import _git_rev, file_digest, log_run
 from sim.mujoco.grasp import contact_on_object, gripper_geom_ids
-from sim.mujoco.kinematics import solve_pose_ik
+from sim.mujoco.kinematics import pick_waypoints, solve_pose_ik
 
 
 class EpisodeRecorder:
@@ -145,32 +145,25 @@ def collect_one(
     z0 = float(obj_xyz[2])
     grasp_pt = obj_xyz + np.array([0.0, 0.0, float(g["grasp_z_offset_m"])])
 
-    plan = [
-        (grasp_pt + np.array([0.0, 0.0, float(g["approach_height_m"])]), g["open_cmd"], 1.2),
-        (grasp_pt, g["open_cmd"], 1.0),
-    ]
-    solved = []
-    q_seed = data.qpos[:6]
-    for target, grip, dur in plan:
-        res = solve_pose_ik(model, target, offset, axis, q_init=q_seed)
-        if not res.ok:
+    # One definition, shared with the evaluation baseline. See pick_waypoints.
+    # 평가 baseline 과 공유하는 유일한 정의. pick_waypoints 참조.
+    segments = pick_waypoints(cfg, obj_xyz)
+    for seg in segments:
+        if seg.target is None:
+            continue
+        if not solve_pose_ik(model, seg.target, offset, axis, q_init=data.qpos[:6]).ok:
             return None
-        solved.append((res.qpos, float(grip), dur))
-        q_seed = res.qpos
 
     rec = EpisodeRecorder(model, cfg, renderer)
-    for q, grip, dur in solved:
-        _drive(model, data, rec, q, grip, dur, rate_hz)
-    _drive(model, data, rec, data.ctrl[:5].copy(), float(g["close_cmd"]), 1.0, rate_hz)
-
-    res = solve_pose_ik(
-        model,
-        grasp_pt + np.array([0.0, 0.0, float(g["lift_height_m"])]),
-        offset,
-        axis,
-        q_init=data.qpos[:6],
-    )
-    _drive(model, data, rec, res.qpos, float(g["close_cmd"]), 1.5, rate_hz)
+    for seg in segments:
+        if seg.target is None:
+            q_target = data.ctrl[:5].copy()
+        else:
+            res = solve_pose_ik(model, seg.target, offset, axis, q_init=data.qpos[:6])
+            if not res.ok:
+                return None
+            q_target = res.qpos
+        _drive(model, data, rec, q_target, seg.grip, seg.seconds, rate_hz)
 
     lifted = float(data.xpos[obj_bid][2]) - z0
     _, n_end = contact_on_object(model, data, obj_gid, jaws)
