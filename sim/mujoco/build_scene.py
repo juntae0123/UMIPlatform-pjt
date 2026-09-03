@@ -109,6 +109,10 @@ def build_model(
         _set_camera(cam, block, resolution)
 
     _apply_gripper_pads(spec, cfg)
+    # Render determinism knob, from config -- see cameras.offsamples in so101.yaml.
+    # 렌더 결정성 노브. 설정에서 읽는다 — so101.yaml 의 cameras.offsamples.
+    if "offsamples" in cams:
+        spec.visual.quality.offsamples = int(cams["offsamples"])
     model = spec.compile()
 
     found = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, i) for i in range(model.ncam)}
