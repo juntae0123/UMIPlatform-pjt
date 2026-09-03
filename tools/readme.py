@@ -277,7 +277,56 @@ ORDER = ["grasp_check", "reach_scan", "rollout_baselines", "train_bc",
          "verify_dataset", "gripper_probe"]
 
 
-def build_block(runs: dict[str, dict[str, Any]]) -> str:
+def freshness(log: Path, runs: dict[str, dict[str, Any]]) -> list[str]:
+    """State how fresh the log this block was rendered from actually is.
+    이 블록을 렌더링한 로그가 실제로 얼마나 최신인지 밝힌다.
+
+    `--check` compares the README against EXP_LOG and passes when they agree.
+    That says nothing about whether EXP_LOG itself is current: on 2026-09-03 the
+    check passed while the local log was 6 records behind the server's, because
+    both sides were stale together. 🟢 The guard was guarding the wrong seam.
+    So the block prints the newest record's revision and the current HEAD, and
+    `--check` fails when they differ -- experiments have been run on code that
+    this README has never seen.
+    `--check` 는 README 와 EXP_LOG 를 대조해 일치하면 통과한다. 그건 EXP_LOG 자체가
+    최신인지에 대해 아무 말도 하지 않는다. 2026-09-03 실측 🟢: 로컬 로그가 서버보다
+    6건 뒤처진 상태에서 검사가 통과했다 — 양쪽이 같이 낡았기 때문이다.
+    가드가 엉뚱한 이음매를 지키고 있었다. 그래서 최신 기록의 리비전과 현재 HEAD 를
+    함께 찍고, 다르면 `--check` 를 실패시킨다. 이 README 가 본 적 없는 코드에서
+    실험이 돌았다는 뜻이므로.
+    """
+    n = sum(1 for _ in log.open(encoding="utf-8")) if log.exists() else 0
+    revs = {r.get("git_rev", "?") for r in runs.values()}
+    head = _head_rev()
+    stale = head is not None and head not in revs and revs != {"?"}
+    lines = [
+        f"로그 기록 수 **{n}** · 이 블록의 리비전 {sorted(revs)} · 현재 HEAD `{head or '?'}`",
+        "",
+    ]
+    if stale:
+        lines += [
+            "> ⚠️ **이 수치들은 현재 코드에서 나온 것이 아니다.** 최신 기록의 리비전이",
+            "> HEAD 와 다르다. 서버에서 돈 실험이 `EXP_LOG.jsonl` 로 커밋되지 않았거나,",
+            "> 코드가 바뀐 뒤 재측정하지 않았다.",
+            "",
+        ]
+    return lines
+
+
+def _head_rev() -> str | None:
+    """Current git revision, short. None if git is unavailable.
+    현재 git 리비전(짧게). git 을 못 쓰면 None."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def build_block(runs: dict[str, dict[str, Any]], log: Path = DEFAULT_EXP_LOG) -> str:
     """Render the whole generated section.
     생성 구역 전체를 렌더링한다."""
     lines = [
@@ -286,7 +335,7 @@ def build_block(runs: dict[str, dict[str, Any]]) -> str:
         "모든 수치는 **시뮬**이며, 각 실험의 **가장 최근 로그**에서 자동 생성된다.",
         "직접 고치지 마라 — `python tools/update_readme.py` 로 다시 만든다.",
         "",
-    ]
+    ] + freshness(log, runs)
     missing = [n for n in ORDER if n not in runs]
     for name in ORDER:
         rec = runs.get(name)
@@ -331,14 +380,20 @@ def main() -> int:
 
     head, rest = text.split(BEGIN, 1)
     _, tail = rest.split(END, 1)
-    block = build_block(load_runs(args.log))
+    block = build_block(load_runs(args.log), args.log)
     updated = head + block + tail
 
     if args.check:
         if updated != text:
             print("README 의 측정 수치가 EXP_LOG 와 다르다. tools/update_readme.py 를 돌려라.")
             return 1
-        print("README 측정 수치가 EXP_LOG 와 일치한다.")
+        # Agreement is not freshness. See freshness() for why this second check exists.
+        # 일치는 최신성이 아니다. 이 두 번째 검사가 왜 있는지는 freshness() 참조.
+        if "이 수치들은 현재 코드에서 나온 것이 아니다" in updated:
+            print("README 와 EXP_LOG 는 일치하지만 **EXP_LOG 가 현재 코드보다 낡았다.**")
+            print("서버 EXP_LOG.jsonl 을 커밋하거나, 바뀐 코드로 재측정하라.")
+            return 1
+        print("README 측정 수치가 EXP_LOG 와 일치하고, EXP_LOG 가 현재 리비전이다.")
         return 0
 
     if updated == text:
