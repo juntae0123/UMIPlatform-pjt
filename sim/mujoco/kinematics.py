@@ -67,6 +67,26 @@ class PickSegment:
     target: np.ndarray | None
     grip: float
     seconds: float
+    # Whether unreachability disqualifies the episode. Approach and descend do:
+    # if the arm cannot get to the object, there is nothing to demonstrate. The
+    # lift does not, and this is not a style choice -- isolated 🟢 2026-09-03,
+    # over the same 100 placements:
+    #
+    #     lift not gated, seed chained      2 rejected
+    #     lift not gated, seed not chained  2      (chaining is irrelevant here)
+    #     lift GATED,     seed chained     24      <- the cause
+    #     lift gated,     seed not chained 25
+    #
+    # `lift_height_m` is 0.08 m and configs/so101.yaml records the measurement
+    # that IK converges only up to 8 cm above the grasp point with the fingers
+    # held vertical. The lift target sits exactly on that boundary, so gating on
+    # it discards a quarter of otherwise fine placements.
+    # 도달 불가가 에피소드를 탈락시키는가. 접근·하강은 그렇다 — 팔이 물체에 못 가면
+    # 시연할 것이 없다. 들어올리기는 아니고, 이건 취향이 아니라 원인 분리 결과다.
+    # `lift_height_m` 이 0.08m 이고, so101.yaml 에 "손가락을 수직으로 유지한 채로는
+    # 파지점 위 8cm 까지만 IK 가 수렴한다"는 실측이 적혀 있다. 들어올리기 목표가
+    # 정확히 그 경계에 있으므로, 여기에 게이트를 걸면 멀쩡한 배치의 1/4 이 버려진다.
+    required: bool = True
 
 
 def pick_waypoints(cfg: dict[str, Any], obj_xyz: np.ndarray) -> list[PickSegment]:
@@ -105,7 +125,7 @@ def pick_waypoints(cfg: dict[str, Any], obj_xyz: np.ndarray) -> list[PickSegment
     if dwell_s > 0.0:
         segs.append(PickSegment(None, open_cmd, dwell_s))
     segs.append(PickSegment(None, close_cmd, float(t.get("close_s", 1.0))))
-    segs.append(PickSegment(lift, close_cmd, float(t.get("lift_s", 1.5))))
+    segs.append(PickSegment(lift, close_cmd, float(t.get("lift_s", 1.5)), required=False))
     return segs
 
 
