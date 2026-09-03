@@ -194,6 +194,10 @@ class ScriptedPickPolicy:
                 continue
             res = solve_pose_ik(model, seg.target, offset, axis, q_init=seed_q, wrist_roll=0.0)
             if not res.ok:
+                if not seg.required:
+                    # A failed lift skips its segment, as before the refactor.
+                    # 들어올리기 실패는 그 구간만 건너뛴다. 리팩터링 이전과 같다.
+                    continue
                 # Unreachable: hold still rather than flail. The rollout scores
                 # this a failure, which is the correct outcome.
                 # 도달 불가면 휘젓지 말고 정지한다. 롤아웃은 실패로 채점하고 그게 맞다.

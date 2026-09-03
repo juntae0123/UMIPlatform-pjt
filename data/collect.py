@@ -147,22 +147,41 @@ def collect_one(
 
     # One definition, shared with the evaluation baseline. See pick_waypoints.
     # 평가 baseline 과 공유하는 유일한 정의. pick_waypoints 참조.
+    #
+    # Required segments are solved up front, seed chained from one solution to
+    # the next -- the same order the pre-refactor code used. Chaining turned out
+    # not to matter for the rejection count (2 either way 🟢); what matters is
+    # that the lift is not gated. See PickSegment.required.
+    # 필수 구간은 앞에서 미리 풀고, 시드를 한 해에서 다음 해로 이어간다 —
+    # 리팩터링 이전과 같은 순서다. 원인 분리 결과 시드 연결은 탈락 수와 무관했고
+    # (양쪽 2개 🟢), 결정적인 것은 들어올리기에 게이트를 걸지 않는 것이다.
+    # PickSegment.required 참조.
     segments = pick_waypoints(cfg, obj_xyz)
+    q_seed = data.qpos[:6]
+    q_pre: list[np.ndarray | None] = []
     for seg in segments:
-        if seg.target is None:
+        if seg.target is None or not seg.required:
+            q_pre.append(None)          # 구동 시점에 결정한다
             continue
-        if not solve_pose_ik(model, seg.target, offset, axis, q_init=data.qpos[:6]).ok:
+        res = solve_pose_ik(model, seg.target, offset, axis, q_init=q_seed)
+        if not res.ok:
             return None
+        q_pre.append(res.qpos)
+        q_seed = res.qpos
 
     rec = EpisodeRecorder(model, cfg, renderer)
-    for seg in segments:
-        if seg.target is None:
-            q_target = data.ctrl[:5].copy()
+    for seg, pre in zip(segments, q_pre):
+        if pre is not None:
+            q_target = pre
+        elif seg.target is None:
+            q_target = data.ctrl[:5].copy()          # dwell · 제자리 닫기
         else:
-            res = solve_pose_ik(model, seg.target, offset, axis, q_init=data.qpos[:6])
-            if not res.ok:
-                return None
-            q_target = res.qpos
+            # Best effort: solved from the actual pose after closing, and a
+            # failure here is tolerated -- as it was before the refactor.
+            # 최선 노력: 닫은 뒤의 실제 자세에서 풀고, 실패해도 허용한다 —
+            # 리팩터링 이전과 같다.
+            q_target = solve_pose_ik(model, seg.target, offset, axis,
+                                     q_init=data.qpos[:6]).qpos
         _drive(model, data, rec, q_target, seg.grip, seg.seconds, rate_hz)
 
     lifted = float(data.xpos[obj_bid][2]) - z0
