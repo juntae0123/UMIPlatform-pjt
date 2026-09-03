@@ -172,9 +172,14 @@ def main() -> int:
     elif p_res is None:
         print("  R 통과. P·E 미측정이므로 원인 미확정.")
     else:
-        print("  R·P·E 전부 통과 — **한 프로세스 안에서는 결정적이다.**")
-        print("  그렇다면 L37 의 흔들림은 프로세스 간 차이다 (드라이버 상태, 스레드 수,")
-        print("  GPU 컨텍스트 등). 같은 명령을 별도 프로세스로 두 번 돌려 대조해야 한다.")
+        offs = int(cfg["cameras"].get("offsamples", 4))
+        print("  R·P·E 전부 통과 — **결정적이다.**")
+        if offs == 0:
+            print("  MSAA 꺼짐(offsamples=0). 실측 2026-09-03 🟢: offsamples=4 에서 R 1계조 다름 →")
+            print("  0 에서 비트 동일. **MSAA 가 L37 의 원인이었다.** 수집·평가 모두 이 값을 유지한다.")
+        else:
+            print(f"  offsamples={offs} 인데 통과했다. 한 프로세스 안 결과이므로 별도 프로세스로")
+            print("  두 번 돌려 대조해야 L37 을 닫을 수 있다.")
 
     if args.log:
         rec = log_run(
