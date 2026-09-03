@@ -175,6 +175,45 @@ class MujocoPickEnv:
         물체의 정답 위치. 특권 정보이며 시뮬에만 존재한다."""
         return self.data.xpos[self._obj_body].copy()
 
+    @property
+    def gripper_index(self) -> int:
+        """Index of the gripper in the action vector, from the hardware config.
+        행동 벡터에서 그리퍼의 위치. 하드웨어 설정에서 읽는다."""
+        for j in self.cfg["joints"]:
+            if j["name"] == "gripper":
+                return int(j["index"])
+        raise KeyError("configs 의 joints 에 'gripper' 가 없다")
+
+    def pinch_to_object_m(self) -> tuple[float, float]:
+        """Distance from the gripper's pinch pocket to the object centre — privileged.
+        그리퍼 파지 포켓에서 물체 중심까지의 거리. 특권 정보.
+
+        Returns (horizontal xy distance, full 3-D distance) in metres. The pinch
+        pocket is `grasp.pinch_offset_local` from configs/so101.yaml -- the same
+        point the scripted policy aims at -- so this number says how close a
+        learned policy came to the place a grasp actually happens, not to the
+        fingertip. Measured for the failure-shape question: a 0% policy that
+        gets within 15 mm and one that never gets within 50 mm need different fixes.
+        (수평 xy 거리, 3차원 거리) 를 m 로 돌려준다. 파지 포켓은 so101.yaml 의
+        `grasp.pinch_offset_local` — 스크립트 정책이 조준하는 바로 그 점 — 이라서,
+        이 수치는 학습 정책이 손끝이 아니라 **실제로 잡히는 자리**에 얼마나 가까이
+        왔는지를 말한다. 실패의 형태를 묻기 위한 값이다. 15mm 안까지 오는 0% 와
+        50mm 안에도 못 오는 0% 는 처방이 다르다.
+        """
+        from sim.mujoco.kinematics import grasp_point
+
+        pinch = grasp_point(
+            self.model, self.data, np.asarray(self.cfg["grasp"]["pinch_offset_local"])
+        )
+        obj = self.data.xpos[self._obj_body]
+        d = pinch - obj
+        return float(np.hypot(d[0], d[1])), float(np.linalg.norm(d))
+
+    def jaw_contacts(self) -> int:
+        """Number of jaw-object contacts right now — privileged, for scoring.
+        현재 턱-물체 접촉 수. 특권 정보, 채점용."""
+        return self._n_jaw_contacts()
+
     def lift_height(self) -> float:
         """How far the object has risen from its settled height.
         물체가 안착 높이에서 얼마나 올라갔는가."""

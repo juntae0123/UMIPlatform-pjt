@@ -67,6 +67,34 @@ def split_indices(n: int, val_fraction: float, seed: int) -> tuple[list[int], li
     return idx[n_val:].tolist(), idx[:n_val].tolist()
 
 
+def split_by_episode(
+    index: list[tuple[int, int]], n_episodes: int, val_fraction: float, seed: int
+) -> tuple[list[int], list[int], list[int]]:
+    """Hold out whole episodes, not individual ticks.
+    틱이 아니라 에피소드 단위로 홀드아웃한다.
+
+    A tick-level split puts frames from the same episode on both sides. The val
+    frames then sit milliseconds away from training frames of the same object
+    position and the same trajectory, so val loss measures interpolation within
+    a seen episode -- not whether the policy handles an object it has never seen.
+    Measured: val 0.043 alongside a 5.7% rollout. The episode split is the one
+    that asks the rollout's question.
+    틱 단위 분할은 같은 에피소드의 프레임을 양쪽에 놓는다. val 프레임은 같은 물체
+    위치·같은 궤적의 학습 프레임에서 몇 ms 떨어져 있을 뿐이어서, val 손실은 본
+    에피소드 안의 보간을 재는 것이고 처음 보는 물체를 다루는지를 재지 않는다.
+    실측: val 0.043 인데 롤아웃 5.7%. 에피소드 분할이 롤아웃과 같은 질문을 던진다.
+
+    Returns (train sample idx, val sample idx, val episode idx).
+    """
+    rng = np.random.default_rng(seed)
+    eps = rng.permutation(n_episodes)
+    n_val = 0 if val_fraction <= 0.0 or n_episodes <= 1 else max(1, int(round(n_episodes * val_fraction)))
+    val_eps = set(int(e) for e in eps[:n_val])
+    tr = [i for i, (e, _t) in enumerate(index) if e not in val_eps]
+    va = [i for i, (e, _t) in enumerate(index) if e in val_eps]
+    return tr, va, sorted(val_eps)
+
+
 @dataclass
 class TargetTransform:
     """The one place that decides what the loss is computed against.
@@ -161,6 +189,9 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=None, help="설정값을 덮어쓴다")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--split-by", choices=("sample", "episode"), default=None,
+                        help="val 분할 단위. 설정값(train.val_split)을 덮어쓴다. "
+                             "episode 면 에피소드 통째로 홀드아웃 — 일반화를 재는 유일한 분할")
     parser.add_argument("--val-fraction", type=float, default=None,
                         help="설정값을 덮어쓴다. 0 이면 홀드아웃 없음 (외우기 검사용)")
     parser.add_argument("--seed", type=int, default=None,
@@ -196,9 +227,20 @@ def main() -> int:
 
     val_fraction = float(args.val_fraction if args.val_fraction is not None
                          else t["val_fraction"])
-    tr_idx, va_idx = split_indices(len(dataset), val_fraction, seed)
-    print(f"분할: train {len(tr_idx)} / val {len(va_idx)} (val_fraction {val_fraction})"
-          + ("  ⚠️ 홀드아웃 없음 — 외우기 검사 전용. 일반화 수치가 아니다" if not va_idx else ""))
+    split_by = str(args.split_by if args.split_by is not None else t.get("val_split", "sample"))
+    val_episodes: list[int] = []
+    if split_by == "episode" and getattr(dataset, "index", None) is not None:
+        tr_idx, va_idx, val_episodes = split_by_episode(
+            dataset.index, len(dataset.episodes), val_fraction, seed
+        )
+        print(f"분할: **episode 단위** · val 에피소드 {len(val_episodes)}개 → "
+              f"train {len(tr_idx)} / val {len(va_idx)} 샘플 (val_fraction {val_fraction})")
+        print("  val 은 학습에 없는 물체 위치다 — 이 val 은 일반화를 잰다")
+    else:
+        tr_idx, va_idx = split_indices(len(dataset), val_fraction, seed)
+        print(f"분할: sample 단위 · train {len(tr_idx)} / val {len(va_idx)} (val_fraction {val_fraction})"
+              + ("  ⚠️ 홀드아웃 없음 — 외우기 검사 전용. 일반화 수치가 아니다" if not va_idx else
+                 "  ⚠️ 같은 에피소드의 다른 틱이 val 이다 — 일반화를 재지 않는다"))
     loaders = {
         "train": DataLoader(Subset(dataset, tr_idx), batch_size=batch_size, shuffle=True,
                             num_workers=int(t["num_workers"]), collate_fn=collate),
@@ -239,6 +281,19 @@ def main() -> int:
         # epoch 손실과 그것을 읽는 기준이 다른 단위가 될 수 없다.
         target_fn = TargetTransform(space, t_mean, t_std)
         scaled = target_fn(acts, sts)
+        # What the head is asked to fit, joint by joint, before any scaling. A
+        # target that is exactly zero on most steps (the gripper delta was zero
+        # on 124 of 141) has median zero, and an L1 head learns that median.
+        # Seen here before training instead of after a 0% rollout.
+        # 스케일링 전, 관절별로 헤드가 맞춰야 하는 것. 대부분 스텝에서 정확히 0 인
+        # 목표(그리퍼 델타는 141 중 124 가 0 이었다)는 중앙값이 0 이고 L1 헤드는 그
+        # 중앙값을 배운다. 0% 롤아웃 뒤가 아니라 학습 전에 여기서 본다.
+        zero_frac = (raw_target.abs() < 1e-6).float().mean(dim=0)
+        print("회귀 목표 분포 (스케일링 전): 관절별 |std| / 정확히 0 인 비율")
+        print("  std  " + " ".join(f"{float(v):.5f}" for v in raw_target.std(dim=0)))
+        print("  zero " + " ".join(f"{float(v):6.0%}" for v in zero_frac))
+        if bool((zero_frac > 0.5).any()):
+            print("  ⚠️ 절반 넘게 0 인 관절이 있다 — L1 의 최적값이 0 이 되는 스파이크 목표다")
         # What a network that always outputs zero would score, in the same units
         # the epoch losses are printed in. A loss without this reference cannot be
         # read: 0.0057 looked fine until it turned out zero-output scores 0.0075.
@@ -360,6 +415,8 @@ def main() -> int:
             conditions={
                 "trained_on": trained_on, "n_episodes": n_episodes,
                 "n_samples": len(dataset), "epochs": epochs, "batch_size": batch_size,
+                "split_by": split_by, "val_fraction": val_fraction,
+                "val_episodes": val_episodes,
                 "lr": t["lr"], "loss": t["loss"], "seed": seed, "device": str(device),
                 "encoder_mode": cfg["model"]["encoder_mode"],
                 "action_space": model.action_space,

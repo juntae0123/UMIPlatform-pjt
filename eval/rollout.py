@@ -43,6 +43,13 @@ from tracking.exp_log import file_digest, log_run
 # not a judgement, it is a rationalisation.
 # 어떤 수치도 나오기 전에 확정했다. 결과를 보고 이걸 고치면 판정이 아니라
 # 사후 합리화다.
+# Reading rule for the failure shape, fixed before the first number. Not a gate
+# -- it does not pass or fail a policy -- it says which of two different
+# problems a failing policy has.
+# 실패 형태를 읽는 규칙. 첫 수치가 나오기 전에 확정했다. 게이트가 아니다 — 정책을
+# 통과/실패시키지 않는다. 실패하는 정책이 두 문제 중 어느 쪽인지 말한다.
+PRECISION_NEAR_MM = 15.0   # 실측 재생 허용오차: ±10mm 3/4, ±15mm 1/4
+PRECISION_FAR_MM = 30.0
 GATES: dict[str, str] = {
     "floor": "학습 정책 성공률 > hold 성공률 + 20%p. 못 넘으면 정책이 무의미하다.",
     "chance": "학습 정책 성공률 > zero 성공률 + 20%p. 못 넘으면 우연과 구분되지 않는다.",
@@ -64,6 +71,18 @@ class RolloutResult:
     ticks: int
     lift_height_m: float
     object_xy: tuple[float, float]
+    # Shape of the attempt, not just its outcome. Closest the pinch pocket came
+    # to the object (mm, horizontal and 3-D), when, whether the jaws ever touched
+    # it, and the lowest gripper command issued. These separate "went to the
+    # wrong place" from "went to the right place and failed to close".
+    # 결과가 아니라 시도의 **형태**. 파지 포켓이 물체에 가장 가까웠던 거리(mm, 수평·3D),
+    # 그 시점, 턱이 물체에 닿은 적이 있는지, 내린 그리퍼 명령의 최솟값.
+    # "엉뚱한 곳으로 갔다"와 "맞는 곳에 갔는데 못 닫았다"를 가른다.
+    min_pinch_xy_mm: float = float("nan")
+    min_pinch_3d_mm: float = float("nan")
+    tick_at_min: int = -1
+    first_contact_tick: int = -1
+    gripper_cmd_min: float = float("nan")
 
 
 def rollout(
@@ -90,9 +109,20 @@ def rollout(
     obj = env.object_position()
     success = False
     ticks = 0
+    min_xy, min_3d, tick_at_min = float("inf"), float("inf"), -1
+    first_contact = -1
+    grip_min = float("inf")
+    g = env.gripper_index
     for _ in range(env.max_ticks):
-        obs = env.step(policy.act(obs))
+        action = policy.act(obs)
+        grip_min = min(grip_min, float(action[g]))
+        obs = env.step(action)
         ticks += 1
+        xy, d3 = env.pinch_to_object_m()
+        if xy < min_xy:
+            min_xy, min_3d, tick_at_min = xy, d3, ticks
+        if first_contact < 0 and env.jaw_contacts() > 0:
+            first_contact = ticks
         if env.is_success():
             success = True
             break
@@ -102,6 +132,11 @@ def rollout(
         ticks=ticks,
         lift_height_m=round(env.lift_height(), 5),
         object_xy=(round(float(obj[0]), 5), round(float(obj[1]), 5)),
+        min_pinch_xy_mm=round(min_xy * 1000, 2),
+        min_pinch_3d_mm=round(min_3d * 1000, 2),
+        tick_at_min=tick_at_min,
+        first_contact_tick=first_contact,
+        gripper_cmd_min=round(grip_min, 4),
     )
 
 
@@ -172,6 +207,26 @@ def replay_tolerance(
         "recorded_xy": list(recorded_xy),
         "at_recorded_condition": baseline_ok,
         "rows": rows,
+    }
+
+
+def failure_shape(results: list[RolloutResult]) -> dict[str, Any] | None:
+    """Summarise how the failed attempts failed.
+    실패한 시도들이 어떻게 실패했는지 요약한다."""
+    fails = [r for r in results if not r.success and r.min_pinch_xy_mm == r.min_pinch_xy_mm]
+    if not fails:
+        return None
+    xy = np.array([r.min_pinch_xy_mm for r in fails])
+    contact = sum(1 for r in fails if r.first_contact_tick >= 0)
+    return {
+        "n_fail": len(fails),
+        "xy_median": float(np.median(xy)),
+        "xy_q25": float(np.percentile(xy, 25)),
+        "xy_q75": float(np.percentile(xy, 75)),
+        "near_frac": float(np.mean(xy <= PRECISION_NEAR_MM)),
+        "far_frac": float(np.mean(xy > PRECISION_FAR_MM)),
+        "contact_frac": contact / len(fails),
+        "grip_min_median": float(np.median([r.gripper_cmd_min for r in fails])),
     }
 
 
@@ -259,6 +314,7 @@ def main() -> None:
     print()
 
     rates: dict[str, float] = {}
+    shapes: dict[str, dict[str, Any]] = {}
     detail: dict[str, list[dict[str, Any]]] = {}
     privileged: dict[str, bool] = {}
     action_space: str | None = None
@@ -276,6 +332,16 @@ def main() -> None:
                 f"{policy.name:10s} {sum(r.success for r in results):3d}/{len(results)} "
                 f"= {rate * 100:5.1f}%   평균 상승 {np.mean([r.lift_height_m for r in results]) * 100:5.2f}cm{mark}"
             )
+            shape = failure_shape(results)
+            if shape is not None and policy.name not in ("hold", "zero"):
+                shapes[policy.name] = shape
+                print(
+                    f"           실패 {shape['n_fail']}건의 파지점-물체 최소 수평거리: "
+                    f"중앙값 {shape['xy_median']:.1f}mm (Q1 {shape['xy_q25']:.1f} / Q3 {shape['xy_q75']:.1f}) · "
+                    f"≤{PRECISION_NEAR_MM:.0f}mm {shape['near_frac'] * 100:.0f}% · "
+                    f">{PRECISION_FAR_MM:.0f}mm {shape['far_frac'] * 100:.0f}% · "
+                    f"턱 접촉 {shape['contact_frac'] * 100:.0f}% · 그리퍼 명령 최솟값 중앙 {shape['grip_min_median']:+.3f}"
+                )
 
     where = (f"물체 고정 ({object_xy[0]:+.4f}, {object_xy[1]:+.4f})"
              if object_xy is not None else f"물체 xy ±{args.jitter * 1000:.0f}mm")
@@ -308,6 +374,15 @@ def main() -> None:
               f"{'통과' if ok else '실패 — 태스크/씬 문제이지 정책 문제가 아니다'}")
     floor = max(rates.get("hold", 0.0), rates.get("zero", 0.0))
     threshold = floor + 0.20
+    if "bc" in shapes:
+        sh = shapes["bc"]
+        if sh["xy_median"] <= PRECISION_NEAR_MM:
+            read = "가까이 가서 못 잡는다 — 정밀도·파지 타이밍 문제"
+        elif sh["xy_median"] > PRECISION_FAR_MM:
+            read = "접근 자체가 틀린다 — 위치 추정 문제"
+        else:
+            read = "판정 유보 — 중간 영역"
+        print(f"  [failure_shape] bc 실패 최소거리 중앙값 {sh['xy_median']:.1f}mm → {read}")
     if "bc" in rates:
         ok = rates["bc"] > threshold
         print(f"  [floor/chance]  bc {rates['bc'] * 100:.1f}% > {threshold * 100:.1f}% → "
@@ -345,6 +420,7 @@ def main() -> None:
             },
             result={
                 "success_rates": rates,
+                "failure_shape": shapes,
                 "uses_privileged_state": privileged,
                 "replay_tolerance": tolerance,
                 "detail": detail,
