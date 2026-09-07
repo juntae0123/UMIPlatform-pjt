@@ -39,7 +39,7 @@ from eval.stats import wilson_ci
 from paths import AI_ROOT, DEFAULT_EXP_LOG
 from policy.bc import DEFAULT_TRAIN_CONFIG
 from sim.mujoco.build_scene import DEFAULT_CONFIG
-from tracking.exp_log import file_digest, log_run
+from tracking.exp_log import code_digest, file_digest, log_run
 from tracking.findings import brief as findings_brief
 from tracking.findings import write as findings_write
 from tracking.monitor import print_drift
@@ -85,6 +85,33 @@ def _latest_record(experiment: str, match: dict[str, Any]) -> dict[str, Any] | N
     return found
 
 
+# Captured when the module loads, i.e. when the run starts.
+# `log_run` computes `code_sha` and `git_rev` at **log time**, which for a job
+# that runs for hours is a different tree than the one that produced the number.
+# Measured 2026-09-07 🟢: the v6 run logged git_rev b7ffabe -- a commit that did
+# not exist when the job launched -- and its `train_config_sha` came out None
+# because the loaded module predated that field. A record that names the wrong
+# code is worse than one that names none.
+# 모듈이 로드될 때, 즉 **실행이 시작될 때** 잡는다. `log_run` 은 `code_sha` 와
+# `git_rev` 를 **로그 시점에** 계산하는데, 몇 시간 도는 잡에서는 그 트리가 수치를
+# 만든 트리와 다르다. 2026-09-07 실측 🟢: v6 실행이 git_rev b7ffabe 로 기록됐는데
+# 그 커밋은 잡이 시작될 때 존재하지 않았고, `train_config_sha` 가 None 으로 나온
+# 것도 로드된 모듈이 그 필드보다 먼저였기 때문이다. 틀린 코드를 가리키는 기록은
+# 아무것도 가리키지 않는 기록보다 나쁘다.
+CODE_SHA_AT_LAUNCH = code_digest()
+
+
+def _worktree_dirty() -> bool:
+    """Are there uncommitted tracked changes right now?
+    지금 커밋되지 않은 추적 변경이 있는가?"""
+    try:
+        out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                             cwd=AI_ROOT, capture_output=True, text=True, timeout=10)
+        return out.returncode == 0 and bool(out.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def run_conditions(args: Any, train_seeds: list[int] | None = None) -> dict[str, Any]:
     """The one place a repeat_runs condition set is built.
     repeat_runs 조건 묶음을 만드는 **유일한** 자리.
@@ -109,6 +136,7 @@ def run_conditions(args: Any, train_seeds: list[int] | None = None) -> dict[str,
         # 씬 설정과 **학습 설정을 따로** 해싱한다. 예전에는 씬만 해싱해서
         # bc.yaml 변경(epochs·lr·행동공간)이 표류 감지 밖에 있었다.
         "config_sha": file_digest(DEFAULT_CONFIG),
+        "code_sha_at_launch": CODE_SHA_AT_LAUNCH,
         "train_config_sha": file_digest(DEFAULT_TRAIN_CONFIG),
         "gate": {"rollout": ROLLOUT_GATE, "min_runs": GATE_MIN_RUNS},
     }
@@ -252,6 +280,14 @@ def main() -> int:
 
     # 조건 표류를 실행 **전에** 찍는다. 결과를 다 뽑은 뒤에 알면 늦다.
     print_drift(run_conditions(args))
+
+    # 지금까지 기록된 repeat_runs 5건이 **전부** dirty=True 였다 🟢 2026-09-07.
+    # 그래서 v2→v3→v5 의 차이를 어느 변경에 귀속시킬 수 없다. 커밋 해시가
+    # 가리키는 트리에서 돈 것이 아니기 때문이다.
+    if _worktree_dirty():
+        print("⚠️ 커밋되지 않은 변경이 있는 트리에서 돈다. 이 수치는 git 커밋으로 "
+              "되짚어갈 수 없고, code_sha 로만 특정된다. 조건 비교가 목적이면 "
+              "먼저 커밋하라")
 
     # 지난 실험 성적을 **시작 전에** 찍는다. 끝난 뒤에 대조하면 이미 조건을 정한 뒤다.
     print("\n" + findings_brief() + "\n")
