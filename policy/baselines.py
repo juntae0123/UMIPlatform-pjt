@@ -24,10 +24,10 @@ from pathlib import Path
 
 import numpy as np
 
-from sim.mujoco.build_scene import normalize
+from sim.mujoco.build_scene import denormalize, normalize
 from sim.base import Observation
 from sim.mujoco.env import MujocoPickEnv
-from sim.mujoco.kinematics import pick_waypoints, solve_pose_ik
+from sim.mujoco.kinematics import grasp_point, pick_waypoints, solve_pose_ik
 from policy.base import check_action
 
 
@@ -215,3 +215,201 @@ class ScriptedPickPolicy:
                 plan.append(normalize(np.concatenate([q, [grip]]), cfg))
             q_prev = np.concatenate([np.asarray(q_target[:5], dtype=float), [grip]])
         return plan
+
+
+class ScriptedFeedbackPolicy:
+    """A state-feedback version of the scripted expert. DAgger requires one.
+    스크립트 전문가의 상태 피드백 판. DAgger 가 요구하는 형태다.
+
+    `ScriptedPickPolicy` plans once at reset and replays by tick index -- it never
+    reads `obs` at all. DAgger asks "what would the expert do in **this** state",
+    and an open-loop plan cannot answer that question: it does not know where it
+    is. So the phase boundaries move off the clock and onto the geometry. Each
+    phase's target is recomputed from the object's true position, and the command
+    is a rate-limited step from the joint angles the robot is **actually** at.
+    `ScriptedPickPolicy` 는 리셋에서 계획을 한 번 세우고 틱 번호로 재생한다 —
+    `obs` 를 아예 읽지 않는다. DAgger 는 "**이** 상태에서 전문가라면 뭘 했겠나"를
+    묻는데, 개루프 계획은 그 질문에 답할 수 없다. 자기가 어디 있는지 모르니까.
+    그래서 phase 경계를 시계에서 기하로 옮긴다. phase 마다 목표를 물체 참값에서
+    다시 계산하고, 명령은 로봇이 **실제로** 있는 관절각에서 출발한 속도제한 스텝이다.
+
+    Two honesty notes, written here rather than hidden:
+    숨기지 않고 여기 적는 두 가지:
+
+    1. Still privileged. It reads the object's true position, exactly like
+       `ScriptedPickPolicy`. It is an expert for labelling, never a deployable
+       policy.
+       여전히 특권 정보다. `ScriptedPickPolicy` 와 똑같이 물체 참값을 읽는다.
+       라벨을 붙이는 전문가이고, 배포 가능한 정책이 아니다.
+    2. Closing is still on the clock. There is no contact signal in the
+       observation to close on, so the close phase runs for `timing.close_s`.
+       That is the one part of the plan that stays open-loop.
+       닫기는 여전히 시계로 한다. 관측에는 접촉 신호가 없어서 닫을 계기가 없다.
+       닫기 phase 는 `timing.close_s` 만큼 돈다. 계획 중 개루프로 남는 부분이다.
+
+    Whether this actually recovers from an off-distribution state is **not**
+    assumed here -- `eval/recovery.py` measures it, and its G0-b gate stops
+    DAgger before a single label is collected if it does not.
+    이것이 실제로 분포 밖 상태에서 복구하는지는 여기서 가정하지 않는다 —
+    `eval/recovery.py` 가 계측하고, 못 하면 G0-b 게이트가 라벨 한 장 모으기 전에
+    DAgger 를 멈춘다.
+    """
+
+    name = "scripted_fb"
+    uses_privileged_state = True
+
+    APPROACH, DESCEND, CLOSE, LIFT, DONE = "approach", "descend", "close", "lift", "done"
+
+    def __init__(self, env: MujocoPickEnv) -> None:
+        self._env = env
+        self._cfg = env.cfg
+        g = env.cfg["grasp"]
+        fb = g.get("feedback", {})
+        self._offset = np.asarray(g["pinch_offset_local"], dtype=float)
+        self._axis = np.asarray(g["approach_axis"], dtype=float)
+        self._open, self._close = float(g["open_cmd"]), float(g["close_cmd"])
+        self._max_step = float(fb.get("max_joint_step_rad", 0.05))
+        self._approach_tol = float(fb.get("approach_tol_m", 0.010))
+        self._grasp_tol = float(fb.get("grasp_tol_m", 0.005))
+        self._resolve_move = float(fb.get("resolve_obj_move_m", 0.002))
+        self._close_ticks = max(1, int(float(g["timing"]["close_s"]) * env.control_rate_hz))
+        self.phase = self.APPROACH
+        self.phase_entry: dict[str, int] = {}
+        self._tick = 0
+        self._close_left = self._close_ticks
+        self._q_target: np.ndarray | None = None
+        self._solved_at: np.ndarray | None = None
+        self._solved_phase = ""
+        self._obj_frozen: np.ndarray | None = None
+        self.ik_solves = 0
+        self.ik_failures = 0
+        self.ik_fail_by_phase: dict[str, int] = {}
+
+    def reset(self, seed: int | None = None) -> None:
+        """Return to the approach phase and forget the cached IK solution.
+        접근 phase 로 돌아가고 캐시된 IK 해를 잊는다."""
+        self.phase = self.APPROACH
+        self.phase_entry = {self.APPROACH: 0}
+        self._tick = 0
+        self._close_left = self._close_ticks
+        self._q_target = None
+        self._solved_at = None
+        self._solved_phase = ""
+        self._obj_frozen = None
+        self.ik_solves = 0
+        self.ik_failures = 0
+        self.ik_fail_by_phase = {}
+
+    def _targets(self, obj: np.ndarray) -> dict[str, np.ndarray]:
+        """The three Cartesian waypoints, from the object's current position.
+        물체의 현재 위치에서 계산한 세 데카르트 웨이포인트."""
+        g = self._cfg["grasp"]
+        grasp_pt = np.asarray(obj, dtype=float) + np.array(
+            [0.0, 0.0, float(g["grasp_z_offset_m"])]
+        )
+        return {
+            self.APPROACH: grasp_pt + np.array([0.0, 0.0, float(g["approach_height_m"])]),
+            self.DESCEND: grasp_pt,
+            self.LIFT: grasp_pt + np.array([0.0, 0.0, float(g["lift_height_m"])]),
+        }
+
+    def _advance(self, pinch: np.ndarray, targets: dict[str, np.ndarray]) -> None:
+        """Move to the next phase when this phase's condition is met.
+        이 phase 의 조건이 충족되면 다음 phase 로 넘어간다."""
+        prev = self.phase
+        if self.phase == self.APPROACH:
+            if float(np.linalg.norm(pinch - targets[self.APPROACH])) < self._approach_tol:
+                self.phase = self.DESCEND
+        elif self.phase == self.DESCEND:
+            if float(np.linalg.norm(pinch - targets[self.DESCEND])) < self._grasp_tol:
+                self.phase = self.CLOSE
+        elif self.phase == self.CLOSE:
+            self._close_left -= 1
+            if self._close_left <= 0:
+                self.phase = self.LIFT
+        elif self.phase == self.LIFT:
+            if float(np.linalg.norm(pinch - targets[self.LIFT])) < self._approach_tol:
+                self.phase = self.DONE
+        if self.phase != prev:
+            self.phase_entry.setdefault(self.phase, self._tick)
+
+    def act(self, obs: Observation) -> np.ndarray:
+        """One rate-limited step toward this phase's target.
+        이 phase 의 목표로 향하는 속도제한 스텝 하나."""
+        env = self._env
+        self._tick += 1
+        q_now = np.asarray(denormalize(obs.state, self._cfg), dtype=float)
+        obj = env.object_position()
+        pinch = grasp_point(env.model, env.data, self._offset)
+        targets = self._targets(self._obj_frozen if self._obj_frozen is not None else obj)
+        self._advance(pinch, targets)
+        if self.phase in (self.CLOSE, self.LIFT, self.DONE) and self._obj_frozen is None:
+            # Freeze the reference once the object is captured. Recomputing the lift
+            # target from the object's *current* position makes the target rise with
+            # the object the gripper is holding -- the arm then chases a point
+            # 8.8 cm above whatever it lifts, forever, until the solve goes
+            # infeasible. 2026-09-07 🟢: 22/22 lift IK failures, 0/4 success, every
+            # episode ending in the lift phase.
+            # 물체가 잡히면 기준을 고정한다. lift 목표를 물체의 **현재** 위치에서
+            # 다시 계산하면, 그리퍼가 든 물체와 함께 목표도 올라가서 팔이 자기가
+            # 들고 있는 것의 8.8cm 위를 영원히 쫓고 결국 해가 없어진다.
+            # 2026-09-07 실측 🟢: lift IK 22/22 실패, 0/4 성공, 전부 lift phase 에서 종료.
+            self._obj_frozen = np.asarray(obj, dtype=float).copy()
+            targets = self._targets(self._obj_frozen)
+
+        if self.phase in (self.CLOSE, self.DONE):
+            # 닫는 중에는 팔을 세우지 않는다. 물체를 밀어내는 원인이 된다.
+            q_arm = q_now[:5]
+        else:
+            target = targets[self.APPROACH if self.phase == self.APPROACH else self.phase]
+            moved = (
+                self._solved_at is None
+                or self._solved_phase != self.phase
+                or float(np.linalg.norm(np.asarray(obj) - self._solved_at)) > self._resolve_move
+            )
+            if moved:
+                # Seed from the previous phase's solution, exactly as the open-loop
+                # plan does (`seed_q = res.qpos`), and only then from the measured
+                # joints. IK here is a local solver, so the seed picks the branch.
+                # 2026-09-07 🟢: seeding from the measured joints instead failed the
+                # lift solve 14/14 while the open-loop plan solved it -- the two
+                # experts differed in IK seeding, not in feedback, which is exactly
+                # what G0-a must not be measuring.
+                # 개루프 계획과 **같은 방식으로** 직전 phase 의 해로 시드하고, 실패할
+                # 때만 실측 관절각으로 재시도한다. 여기 IK 는 국소 해법이라 시드가
+                # 분기를 고른다. 2026-09-07 🟢: 실측 관절각으로 시드했더니 lift 해가
+                # 14/14 실패했는데 개루프는 같은 목표를 풀었다 — 두 전문가가
+                # 피드백이 아니라 IK 시드에서 달랐고, 그건 G0-a 가 재야 할 것이 아니다.
+                seeds = [q_now]
+                if self._q_target is not None:
+                    seeds.insert(0, np.concatenate([self._q_target, [q_now[5]]]))
+                res = None
+                for q_seed in seeds:
+                    res = solve_pose_ik(
+                        env.model, target, self._offset, self._axis,
+                        q_init=q_seed, wrist_roll=0.0,
+                    )
+                    self.ik_solves += 1
+                    if res.ok:
+                        break
+                assert res is not None
+                if res.ok:
+                    self._q_target = np.asarray(res.qpos[:5], dtype=float)
+                else:
+                    # Unreachable: hold. The rollout scores this a failure, correctly.
+                    # 도달 불가면 정지한다. 롤아웃이 실패로 채점하고 그게 맞다.
+                    self.ik_failures += 1
+                    self.ik_fail_by_phase[self.phase] = (
+                        self.ik_fail_by_phase.get(self.phase, 0) + 1
+                    )
+                    self._q_target = q_now[:5].copy()
+                self._solved_at = np.asarray(obj, dtype=float).copy()
+                self._solved_phase = self.phase
+            assert self._q_target is not None
+            delta = np.clip(self._q_target - q_now[:5], -self._max_step, self._max_step)
+            q_arm = q_now[:5] + delta
+
+        grip = self._close if self.phase in (self.CLOSE, self.LIFT, self.DONE) else self._open
+        return check_action(
+            normalize(np.concatenate([q_arm, [grip]]), self._cfg), self.name
+        )

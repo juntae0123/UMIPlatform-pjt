@@ -113,6 +113,16 @@ def diagnostics(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             rows.append({"ts": ts, "kind": "결정론", "ckpt": ck, "note": (
                 f"R 같은프로세스 {rd.get('same_process_ok')} · R 새env {rd.get('new_env_ok')} · "
                 f"P {po.get('ok')} · E {ro.get('ok')}")})
+        elif exp == "recovery_probe":
+            su = x.get("summary", {}) or {}
+            fb = {k.split("|")[1]: v for k, v in su.items() if k.startswith("scripted_fb|")}
+            op = (su.get("scripted|none") or {}).get("rate")
+            curve = " · ".join(f"{k} {v.get('rate', 0) * 100:.0f}%"
+                               for k, v in sorted(fb.items(), key=lambda kv: kv[0]))
+            rows.append({"ts": ts, "kind": "복구(G0)", "ckpt": "scripted_fb", "note": (
+                f"G0-a {x.get('g0a_passed')} · G0-b {x.get('g0b_passed')} · "
+                f"**DAgger {'착수 가능' if x.get('dagger_go') else '착수 불가'}** · "
+                f"개루프 {op * 100:.0f}% · " if op is not None else "") + curve})
         elif exp == "collect_sim":
             rows.append({"ts": ts, "kind": "수집", "ckpt": str(c.get("skill_id", "")), "note": (
                 f"{x.get('episodes_written')}편 저장 · 도달불가 {x.get('skipped_unreachable')} · "
@@ -243,7 +253,8 @@ def render(recs: list[dict[str, Any]] | None = None) -> str:
             L.append(f"| {d['ts']} | {d['kind']} | {d['ckpt']} | {d['note']} |")
         L.append("")
 
-    for key, title in (("rejected", "기각된 가설"), ("alive", "살아있는 가설 / 다음 후보"),
+    for key, title in (("facts", "확정된 사실 — 여기서 시작한다"),
+                       ("rejected", "기각된 가설"), ("alive", "살아있는 가설 / 다음 후보"),
                        ("instruments", "계측기 상태")):
         items = notes.get(key) or []
         if not items:

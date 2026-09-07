@@ -261,6 +261,34 @@ class MujocoPickEnv:
                 n += 1
         return n
 
+    def displace_joints(self, delta_rad: np.ndarray) -> Observation:
+        """Move the arm to an off-nominal configuration and re-observe.
+        팔을 명목 배치 밖으로 옮기고 다시 관측한다.
+
+        Not a disturbance model -- it chooses **where an episode starts**. DAgger
+        asks the expert "what would you do here", and "here" means joint
+        configurations the demonstrations never contain. Injecting a few wrong
+        commands does not produce one: under position control the next command
+        pulls the arm back, so both an open-loop plan and a feedback controller
+        recover trivially. Measured 2026-09-07 🟢 -- open-loop `scripted` scored
+        the same perturbed as undisturbed. Setting `qpos` is the honest way to
+        put the robot somewhere it has never been.
+        교란 모델이 아니다. **에피소드가 어디서 시작하는지**를 고르는 것이다.
+        DAgger 는 전문가에게 "여기서 뭘 하겠나"를 묻고, 그 "여기"는 시연에 없는
+        관절 배치를 뜻한다. 잘못된 명령 몇 개를 주입해서는 그런 상태가 안 만들어진다 —
+        위치 제어에서는 다음 명령이 팔을 되돌리므로 개루프 계획도 피드백 제어기도
+        똑같이 복구한다. 2026-09-07 실측 🟢: 개루프 `scripted` 가 교란 유무에
+        같은 점수를 냈다. `qpos` 를 직접 놓는 것이 로봇을 가본 적 없는 자리에
+        두는 정직한 방법이다.
+        """
+        delta = np.asarray(delta_rad, dtype=float)
+        lo = self.model.jnt_range[:5, 0]
+        hi = self.model.jnt_range[:5, 1]
+        self.data.qpos[:5] = np.clip(self.data.qpos[:5] + delta[:5], lo, hi)
+        self.data.qvel[:] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+        return self._observe()
+
     def _observe(self) -> Observation:
         images: dict[str, np.ndarray] = {}
         for cam in self._cams:

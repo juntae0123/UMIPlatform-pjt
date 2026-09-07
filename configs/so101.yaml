@@ -168,6 +168,14 @@ grasp:
   #    +12cm 위치오차 19.9mm 접근축오차 11.2deg  실패
   #    12cm 로 두면 IK 가 관절한계에 클램프된 해를 내놓고, 그리퍼가 기울어진 채로
   #    올라간다. 물체는 올라가지만 요청한 자세가 아니다. 8cm 로 고정한다.
+  # 상태 피드백 전문가 (policy/baselines.py ScriptedFeedbackPolicy).
+  # DAgger 는 "이 상태에서 전문가라면?"을 물어야 하는데 개루프 계획은 답할 수 없다.
+  # 여기 값들은 phase 전환 기준과 속도 제한이며, 하드코딩하지 않는다.
+  feedback:
+    max_joint_step_rad: 0.05          # 관절당 1틱 최대 변화. 30Hz 에서 1.5 rad/s
+    approach_tol_m: 0.010             # 접근 → 하강 전환 거리
+    grasp_tol_m: 0.005                # 하강 → 닫기 전환 거리. 재생 허용오차 실측 ±5mm 4/4 에 맞춤
+    resolve_obj_move_m: 0.002         # 물체가 이만큼 움직이면 IK 재계산
   lift_height_m: 0.08
 
   # 그리퍼 명령 [rad]. 아래 gap 곡선에서 물체 크기에 맞춰 고른 값.
