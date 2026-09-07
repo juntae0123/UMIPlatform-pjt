@@ -57,17 +57,125 @@ _THREAD_VARS = (
 # 없는지 말해주지 않는다.
 DEFAULT_MUJOCO_GL = "egl"
 
+# The GPUs allocated to this account (j15a103). **0, 5, 7, 8, 9 belong to other
+# people.** The first version of this module defaulted to "0" -- a GPU we do not
+# have -- which is exactly the mistake it was written to prevent, made in the file
+# that prevents it. 🟢 2026-09-07, told by the user after the operators warned
+# about load.
+# 이 계정(j15a103)에 할당된 GPU. **0, 5, 7, 8, 9 는 남의 것이다.** 이 모듈의 첫
+# 판은 기본값을 "0" — 우리에게 없는 장 — 으로 뒀다. 막으려고 쓴 파일에서 막으려던
+# 실수를 냈다. 🟢 2026-09-07, 서버 측 부하 경고 후 사용자가 알려줬다.
+ALLOWED_GPUS: tuple[int, ...] = (1, 2, 3, 4, 6)
+
+# Our own card. Always available to us, so it is the default and nothing has to be
+# decided to use it. The other allocated cards are taken **only when idle** --
+# borrowed, not owned.
+# 우리 장. 항상 쓸 수 있으므로 기본값이고, 쓰려고 아무것도 결정하지 않아도 된다.
+# 나머지 할당분은 **한가할 때만** 잡는다. 빌리는 것이고 소유가 아니다.
+HOME_GPU = 2
+
+# "Idle" thresholds. Memory first: a card with memory held has someone's process on
+# it even at 0% utilisation, and a 1.3M-parameter job shows 1 GB while its GPU
+# utilisation reads 1% 🟢 -- utilisation alone would call that free.
+# "한가함"의 기준. 메모리 우선 — 메모리가 잡혀 있으면 사용률 0% 여도 남의 프로세스가
+# 올라가 있다. 실측 🟢: 1.3M 파라미터 잡이 GPU 사용률 1% 인데 메모리 1GB 를 쓴다.
+# 사용률만 보면 그걸 한가하다고 부른다.
+IDLE_MEM_MB = 300
+IDLE_UTIL_PCT = 20
+
 LOCK_DIR = Path(__file__).resolve().parent / "out"
+
+
+def _gpu_load() -> dict[int, tuple[int, int]]:
+    """Utilisation and used memory per GPU index. Empty when nvidia-smi is absent.
+    GPU 번호별 (사용률, 사용 메모리). nvidia-smi 가 없으면 빈 dict."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=8, check=False,
+        )
+        if out.returncode != 0:
+            return {}
+        rows: dict[int, tuple[int, int]] = {}
+        for line in out.stdout.strip().splitlines():
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) >= 3:
+                rows[int(parts[0])] = (int(parts[1]), int(parts[2]))
+        return rows
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+
+
+def _is_idle(stat: tuple[int, int]) -> bool:
+    util, mem = stat
+    return mem <= IDLE_MEM_MB and util <= IDLE_UTIL_PCT
+
+
+def free_gpus(max_n: int | None = None) -> list[int]:
+    """Allocated cards that look idle, home card first.
+    한가해 보이는 할당분. 우리 장이 맨 앞.
+
+    For fanning a multi-seed block out. Read once at launch -- a card that frees up
+    later is not picked up, and a card that gets busy mid-run is not released. That
+    is the cost of not preempting anyone.
+    다시드 블록을 뿌리기 위한 것. 시작 시점에 한 번 읽는다 — 나중에 비는 장은
+    잡지 않고, 도중에 바빠지는 장을 놓아주지도 않는다. 아무도 밀어내지 않는 대가다.
+    """
+    load = _gpu_load()
+    if not load:
+        return [HOME_GPU]
+    order = [HOME_GPU] + [i for i in ALLOWED_GPUS if i != HOME_GPU]
+    out = [HOME_GPU]
+    for i in order:
+        if i == HOME_GPU or i not in load:
+            continue
+        if _is_idle(load[i]):
+            out.append(i)
+    return out[:max_n] if max_n else out
+
+
+def pick_gpu() -> str:
+    """One card: ours if it is free, otherwise the quietest idle allocated card.
+    한 장: 우리 장이 비었으면 그것, 아니면 한가한 할당분 중 가장 조용한 것."""
+    load = _gpu_load()
+    if not load:
+        return str(HOME_GPU)
+    home = load.get(HOME_GPU)
+    if home is None or _is_idle(home):
+        return str(HOME_GPU)
+    others = [(load[i], i) for i in ALLOWED_GPUS if i != HOME_GPU and i in load
+              and _is_idle(load[i])]
+    if not others:
+        # 전부 바쁘면 우리 장으로 간다. 남의 장을 밀어내지 않는다.
+        return str(HOME_GPU)
+    others.sort(key=lambda kv: (kv[0][1], kv[0][0], kv[1]))
+    return str(others[0][1])
 
 
 def _apply() -> None:
     for var in _THREAD_VARS:
         os.environ.setdefault(var, DEFAULT_THREADS)
     os.environ.setdefault("MUJOCO_GL", DEFAULT_MUJOCO_GL)
-    # One GPU. `setdefault` so an explicit choice still wins -- but the default is
-    # never "all of them".
-    # GPU 한 장. 명시 지정은 존중하되 기본값이 "전부" 인 일은 없게 한다.
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
+    given = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if given is None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = pick_gpu()
+        return
+    # 명시 지정은 존중하되, 남의 장이면 소리내어 말한다.
+    try:
+        asked = [int(x) for x in given.split(",") if x.strip() != ""]
+    except ValueError:
+        return
+    outside = [i for i in asked if i not in ALLOWED_GPUS]
+    if outside:
+        print(f"⚠️ CUDA_VISIBLE_DEVICES={given} 에 할당분이 아닌 장이 있다: {outside}. "
+              f"할당분은 {list(ALLOWED_GPUS)} 다. 남의 작업을 밀어낸다.", file=sys.stderr)
+    if len(asked) > 1:
+        print(f"⚠️ GPU {len(asked)}장을 잡는다. 잡 하나는 한 장이면 된다 — "
+              "여러 장이 필요하면 잡을 나눠서 각각 한 장씩 잡아라.", file=sys.stderr)
 
 
 _apply()
@@ -118,6 +226,8 @@ def claim(name: str, stale_ok: bool = False) -> None:
 def banner() -> str:
     """One line naming the limits actually in effect.
     실제로 적용된 제한을 한 줄로."""
-    return (f"[런타임] GPU {os.environ.get('CUDA_VISIBLE_DEVICES')} · "
+    return (f"[런타임] GPU {os.environ.get('CUDA_VISIBLE_DEVICES')} "
+            f"(우리 장 {HOME_GPU} · 할당분 {','.join(map(str, ALLOWED_GPUS))} · "
+            f"지금 한가함 {free_gpus()}) · "
             f"스레드 {os.environ.get('OMP_NUM_THREADS')} · "
             f"MUJOCO_GL {os.environ.get('MUJOCO_GL')}")
