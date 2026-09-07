@@ -194,6 +194,10 @@ def main() -> int:
                              "episode 면 에피소드 통째로 홀드아웃 — 일반화를 재는 유일한 분할")
     parser.add_argument("--val-fraction", type=float, default=None,
                         help="설정값을 덮어쓴다. 0 이면 홀드아웃 없음 (외우기 검사용)")
+    parser.add_argument("--image-noise", type=float, default=None,
+                        metavar="GRAY",
+                        help="학습 이미지에 더할 가우시안 잡음의 표준편차, 단위는 계조(0~255). "
+                             "설정값을 덮어쓴다. val 은 흔들지 않는다")
     parser.add_argument("--seed", type=int, default=None,
                         help="설정값을 덮어쓴다. 학습 3회 반복 시 서로 다른 값을 준다")
     parser.add_argument("--out", type=Path, default=None, help="체크포인트 경로")
@@ -241,6 +245,17 @@ def main() -> int:
         print(f"분할: sample 단위 · train {len(tr_idx)} / val {len(va_idx)} (val_fraction {val_fraction})"
               + ("  ⚠️ 홀드아웃 없음 — 외우기 검사 전용. 일반화 수치가 아니다" if not va_idx else
                  "  ⚠️ 같은 에피소드의 다른 틱이 val 이다 — 일반화를 재지 않는다"))
+    # 증강은 **분할이 확정된 뒤에** 건다. train 인덱스에만 걸어야 val 이 깨끗하다.
+    noise_gray = float(args.image_noise if args.image_noise is not None
+                       else t.get("image_noise_gray", 0.0))
+    if noise_gray > 0.0 and hasattr(dataset, "set_image_noise"):
+        dataset.set_image_noise(noise_gray, tr_idx)
+        print(f"이미지 잡음: 학습 입력에 σ={noise_gray:.1f} 계조 (val 은 원본)")
+        print("  근거 🟢 폐루프에서 관측이 t=1 에 0.28 계조, t=10 에 1.19 계조 갈라진다. "
+              "L39: 1 계조가 성공/실패를 뒤집는다")
+    elif noise_gray > 0.0:
+        print(f"⚠️ 이미지 잡음 {noise_gray} 계조를 요청했으나 이 데이터셋은 지원하지 않는다 — 무시한다")
+
     loaders = {
         "train": DataLoader(Subset(dataset, tr_idx), batch_size=batch_size, shuffle=True,
                             num_workers=int(t["num_workers"]), collate_fn=collate),
