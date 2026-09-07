@@ -40,6 +40,8 @@ from paths import AI_ROOT, DEFAULT_EXP_LOG
 from policy.bc import DEFAULT_TRAIN_CONFIG
 from sim.mujoco.build_scene import DEFAULT_CONFIG
 from tracking.exp_log import file_digest, log_run
+from tracking.findings import brief as findings_brief
+from tracking.findings import write as findings_write
 from tracking.monitor import print_drift
 
 
@@ -251,6 +253,9 @@ def main() -> int:
     # 조건 표류를 실행 **전에** 찍는다. 결과를 다 뽑은 뒤에 알면 늦다.
     print_drift(run_conditions(args))
 
+    # 지난 실험 성적을 **시작 전에** 찍는다. 끝난 뒤에 대조하면 이미 조건을 정한 뒤다.
+    print("\n" + findings_brief() + "\n")
+
     print(f"학습 {args.runs}회 × 롤아웃 {args.episodes}편 · 데이터 {args.data}")
     print(f"평가 시드 블록 {args.eval_seed_base}~{args.eval_seed_base + args.episodes - 1} "
           "(모든 실행이 동일)\n")
@@ -307,6 +312,8 @@ def main() -> int:
             },
         )
         print(f"\nEXP_LOG.jsonl 기록 (git {rec['git_rev']}, dirty={rec['git_dirty']})")
+        # 기록 직후 원장을 다시 생성한다. 손으로 갱신하면 갱신 안 된 상태가 기본값이 된다.
+        print(f"FINDINGS.md 갱신: {findings_write()}")
 
     return 0 if passed else 1
 
