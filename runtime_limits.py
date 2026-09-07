@@ -231,6 +231,9 @@ def claim(name: str, stale_ok: bool = False) -> None:
 
     lock.write_text(f"{os.getpid()} {name}\n", encoding="utf-8")
     atexit.register(lambda: lock.unlink(missing_ok=True))
+    # 매 실행이 뭘 얼마나 가져갔는지 로그 첫 줄에 남긴다. 나중에 "우리가 풀점유
+    # 했다" 는 말을 들었을 때 대조할 것이 있어야 한다.
+    print(banner(), flush=True)
     warn_if_busy()
 
 
