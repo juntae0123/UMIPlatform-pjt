@@ -137,6 +137,17 @@ def main() -> int:
         print(f"  kick   {pair['kick_successes']}/{pair['n']} = {pair['kick_rate'] * 100:.1f}%  "
               f"CI {pair['kick_ci95'][0] * 100:.1f}~{pair['kick_ci95'][1] * 100:.1f}%")
         print(f"  살린 시드 {len(pair['rescued'])}건 · 망친 시드 {len(pair['broken'])}건")
+        for key, label in (("grasped", "파지 후 동결 (턱접촉 있음)"),
+                           ("airborne", "공중에서 닫고 멈춤 (턱접촉 0)")):
+            g = pair.get(key) or {}
+            if not g.get("n"):
+                continue
+            print(f"  {label}  n={g['n']} · 무개입 {g['none']}/{g['n']} "
+                  f"CI {g['none_ci95'][0] * 100:.1f}~{g['none_ci95'][1] * 100:.1f}% · "
+                  f"kick {g['kick']}/{g['n']} "
+                  f"CI {g['kick_ci95'][0] * 100:.1f}~{g['kick_ci95'][1] * 100:.1f}%")
+        print("  ⚠️ 턱접촉 0 인 동결은 파지 후 동결이 아니다. 들기 밀기가 도울 수 없다 — "
+              "합산하면 kick 효과가 희석된다")
     fixpoint = bool(pair["n"] and pair["kick_ci95"][0] > pair["none_ci95"][1])
     print("\n[fixpoint] " + (
         f"kick 하한 {pair['kick_ci95'][0] * 100:.1f}% > 무개입 상한 "

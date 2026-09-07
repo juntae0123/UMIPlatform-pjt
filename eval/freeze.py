@@ -327,6 +327,28 @@ def paired_on_frozen(none: list[FreezeResult], kick: list[FreezeResult]) -> dict
     b = {r.seed: r.success for r in kick}
     ok_a = sum(1 for x in seeds if a.get(x))
     ok_b = sum(1 for x in seeds if b.get(x))
+    # Split by whether the jaws were actually on the object when it froze. The
+    # first run pooled them and the pooled number said nothing: 11 frozen
+    # episodes, but 7 of them had **zero** jaw contact 🟢 2026-09-07. Those did not
+    # freeze after grasping -- they closed the gripper in mid-air and stopped, a
+    # different failure with a different fix. A lift nudge cannot help them.
+    # 얼었을 때 턱이 실제로 물체에 있었는지로 나눈다. 첫 실행은 둘을 합산했고 그
+    # 합산값은 아무 말도 하지 않았다 — 동결 11편 중 **7편이 턱접촉 0** 이다 🟢
+    # 2026-09-07. 그건 파지 후 동결이 아니라 공중에서 그리퍼를 닫고 멈춘 것이고,
+    # 다른 실패이고 처방도 다르다. 들기 밀기가 도울 수 없는 편들이다.
+    contact = {r.seed: r.jaw_contacts_at_freeze for r in none if r.froze}
+    grasped = [x for x in seeds if contact.get(x, 0) > 0]
+    airborne = [x for x in seeds if contact.get(x, 0) <= 0]
+
+    def sub(group: list[int]) -> dict[str, Any]:
+        if not group:
+            return {"n": 0}
+        ga = sum(1 for x in group if a.get(x))
+        gb = sum(1 for x in group if b.get(x))
+        return {"n": len(group), "none": ga, "kick": gb,
+                "none_ci95": list(wilson_ci(ga, len(group))),
+                "kick_ci95": list(wilson_ci(gb, len(group)))}
+
     return {
         "n": len(seeds),
         "none_successes": ok_a, "kick_successes": ok_b,
@@ -335,6 +357,9 @@ def paired_on_frozen(none: list[FreezeResult], kick: list[FreezeResult]) -> dict
         "kick_ci95": list(wilson_ci(ok_b, len(seeds))),
         "rescued": sorted(x for x in seeds if b.get(x) and not a.get(x)),
         "broken": sorted(x for x in seeds if a.get(x) and not b.get(x)),
+        # 턱접촉 있음 = 실제로 파지 후 동결. 없음 = 공중에서 닫고 멈춤
+        "grasped": sub(grasped),
+        "airborne": sub(airborne),
     }
 
 

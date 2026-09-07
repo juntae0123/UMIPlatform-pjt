@@ -178,11 +178,35 @@ def _unbuffer() -> None:
             pass
 
 
+def _set_mujoco_gl() -> None:
+    """Ask for headless EGL only where EGL exists.
+    EGL 이 있는 곳에서만 헤드리스 EGL 을 요청한다.
+
+    `MUJOCO_GL` is read by mujoco **at import time** and the backend is loaded
+    eagerly, so setting it unconditionally breaks any machine without EGL even
+    when no renderer is created. 2026-09-07 🟢: setting it here made
+    `probe_freeze --policy scripted` (render off) crash on the local VM inside
+    `OpenGL.raw.EGL._types`, and the traceback points at OpenGL rather than at the
+    variable that caused it.
+    `MUJOCO_GL` 은 mujoco 가 **임포트 시점에** 읽고 백엔드를 즉시 로드한다. 그래서
+    무조건 설정하면 EGL 없는 기계에서 렌더를 안 켜도 깨진다. 2026-09-07 실측 🟢:
+    여기서 설정한 탓에 로컬 VM 에서 `probe_freeze --policy scripted`(렌더 off)가
+    `OpenGL.raw.EGL._types` 안에서 죽었고, 트레이스백은 원인이 된 변수가 아니라
+    OpenGL 을 가리킨다.
+    """
+    if "MUJOCO_GL" in os.environ:
+        return
+    from ctypes.util import find_library
+
+    if find_library("EGL"):
+        os.environ["MUJOCO_GL"] = DEFAULT_MUJOCO_GL
+
+
 def _apply() -> None:
     _unbuffer()
     for var in _THREAD_VARS:
         os.environ.setdefault(var, DEFAULT_THREADS)
-    os.environ.setdefault("MUJOCO_GL", DEFAULT_MUJOCO_GL)
+    _set_mujoco_gl()
 
     given = os.environ.get("CUDA_VISIBLE_DEVICES")
     if given is None:
@@ -290,4 +314,4 @@ def banner() -> str:
             f"(우리 장 {HOME_GPU} · 할당분 {','.join(map(str, ALLOWED_GPUS))} · "
             f"지금 한가함 {free_gpus()}) · "
             f"스레드 {os.environ.get('OMP_NUM_THREADS')} · "
-            f"MUJOCO_GL {os.environ.get('MUJOCO_GL')}")
+            f"MUJOCO_GL {os.environ.get('MUJOCO_GL') or '미설정(EGL 없음)'}")
