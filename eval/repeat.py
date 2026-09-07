@@ -39,6 +39,7 @@ from eval.stats import wilson_ci
 from paths import AI_ROOT, DEFAULT_EXP_LOG
 from sim.mujoco.build_scene import DEFAULT_CONFIG
 from tracking.exp_log import file_digest, log_run
+from tracking.monitor import print_drift
 
 
 @dataclass
@@ -91,18 +92,28 @@ def repeat(
     device: str,
     jitter: float,
     epochs: int | None = None,
+    tag: str = "",
+    image_noise: float | None = None,
 ) -> list[RunResult]:
     """Train `runs` times, score each, and collect the results.
     `runs` 회 학습하고 각각 채점해 결과를 모은다."""
     out: list[RunResult] = []
     for i in range(runs):
         seed = seed_base + i
-        ckpt = AI_ROOT / "checkpoints" / "bc" / f"{data.name}_seed{seed}.pt"
+        # 체크포인트 이름이 데이터셋 이름에서만 파생되면, 같은 데이터로 다른 설정을
+        # 돌릴 때 **조용히 덮어쓴다**. 2026-09-07 에 완주한 실험을 그렇게 잃었다.
+        # `tag` 는 그 충돌을 막는 자리다.
+        name = f"{data.name}{('_' + tag) if tag else ''}_seed{seed}.pt"
+        ckpt = AI_ROOT / "checkpoints" / "bc" / name
+        if ckpt.exists():
+            print(f"⚠️ 덮어쓴다: {ckpt.name} (이미 있다). 보존하려면 --tag 를 바꿔라")
 
         train_cmd = [sys.executable, "tools/train_bc.py", "--data", str(data),
                      "--seed", str(seed), "--out", str(ckpt), "--device", device, "--log"]
         if epochs is not None:
             train_cmd += ["--epochs", str(epochs)]
+        if image_noise is not None:
+            train_cmd += ["--image-noise", str(image_noise)]
         _run(train_cmd)
         _run([sys.executable, "tools/eval_rollout.py", "--episodes", str(episodes),
               "--seed-base", str(eval_seed_base), "--jitter", str(jitter), "--render",
@@ -187,6 +198,11 @@ def main() -> int:
     parser.add_argument("--seed-base", type=int, default=0, help="학습 시드 시작값")
     parser.add_argument("--eval-seed-base", type=int, default=3000, help="평가 시드 블록")
     parser.add_argument("--jitter", type=float, default=0.05)
+    parser.add_argument("--tag", type=str, default="",
+                        help="체크포인트 이름에 붙일 꼬리표. 같은 데이터로 다른 설정을 "
+                             "돌릴 때 덮어쓰기를 막는다")
+    parser.add_argument("--image-noise", type=float, default=None,
+                        metavar="GRAY", help="학습 이미지 잡음 σ, 단위 계조. train_bc 로 전달")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
     parser.add_argument("--log", action="store_true")
@@ -197,6 +213,17 @@ def main() -> int:
             f"⚠️ runs={args.runs} 는 배포 게이트의 최소치 {GATE_MIN_RUNS} 보다 작다. "
             "이 결과로는 배포 판정을 할 수 없다."
         )
+
+    # 조건 표류를 실행 **전에** 찍는다. 결과를 다 뽑은 뒤에 알면 늦다.
+    print_drift({
+        "runs": args.runs,
+        "epochs": args.epochs,
+        "episodes": args.episodes,
+        "eval_seed_base": args.eval_seed_base,
+        "jitter_m": args.jitter,
+        "config_sha": file_digest(DEFAULT_CONFIG),
+        "gate": {"rollout": ROLLOUT_GATE, "min_runs": GATE_MIN_RUNS},
+    })
 
     print(f"학습 {args.runs}회 × 롤아웃 {args.episodes}편 · 데이터 {args.data}")
     print(f"평가 시드 블록 {args.eval_seed_base}~{args.eval_seed_base + args.episodes - 1} "
@@ -211,6 +238,8 @@ def main() -> int:
         eval_seed_base=args.eval_seed_base,
         device=args.device,
         jitter=args.jitter,
+        tag=args.tag,
+        image_noise=args.image_noise,
     )
     summary = summarise(results)
 
@@ -248,6 +277,8 @@ def main() -> int:
                 "train_seeds": [r.seed for r in results],
                 "eval_seed_base": args.eval_seed_base,
                 "jitter_m": args.jitter,
+                "tag": args.tag,
+                "image_noise_gray": args.image_noise,
                 "config_sha": file_digest(DEFAULT_CONFIG),
                 "gate": {"rollout": ROLLOUT_GATE, "min_runs": GATE_MIN_RUNS},
             },
