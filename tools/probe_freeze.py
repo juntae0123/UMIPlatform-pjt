@@ -44,13 +44,13 @@ from tracking.exp_log import code_digest, file_digest, log_run  # noqa: E402
 CODE_SHA_AT_LAUNCH = code_digest()
 
 
-def build(env: MujocoPickEnv, name: str, ckpt: Path | None) -> Any:
+def build(env: MujocoPickEnv, name: str, ckpt: Path | None, device: str = "cuda") -> Any:
     """The policy under test. A baseline by name, or a checkpoint.
     검사 대상 정책. 이름으로 baseline, 또는 체크포인트."""
     if ckpt is not None:
         from policy.bc import BCPolicy
 
-        bc = BCPolicy(ckpt)
+        bc = BCPolicy(ckpt, device=device)
         print(f"학습 정책 로드: {bc.describe()}")
         return bc
     from policy.baselines import ScriptedFeedbackPolicy, ScriptedPickPolicy
@@ -70,6 +70,9 @@ def main() -> int:
     p.add_argument("--episodes", type=int, default=100)
     p.add_argument("--seed-base", type=int, default=3000)
     p.add_argument("--jitter", type=float, default=0.05)
+    p.add_argument("--device", type=str, default="cuda",
+                   help="학습 정책을 올릴 장치. BCPolicy 기본값은 cpu 라 200편 × 200틱 "
+                        "forward 가 CPU 2스레드로 돌아간다 — 공유 머신에서 그게 더 나쁘다")
     p.add_argument("--render", action="store_true",
                    help="시각 정책에는 필수다. baseline 연기시험에는 불필요")
     p.add_argument("--author", type=str, default="김준태(트랙B)")
@@ -97,7 +100,7 @@ def main() -> int:
     raw: dict[str, list[Any]] = {}
     with MujocoPickEnv(cfg, render=args.render, object_jitter_m=args.jitter) as env:
         for kick in (False, True):
-            pol = build(env, args.policy, args.policy_ckpt)
+            pol = build(env, args.policy, args.policy_ckpt, args.device)
             res = [probe_freeze(env, pol, s, cfg, kick) for s in seeds]
             key = "kick" if kick else "none"
             out[key] = summarise(res)
@@ -163,6 +166,7 @@ def main() -> int:
                 "policy": str(args.policy_ckpt) if args.policy_ckpt else args.policy,
                 "episodes": args.episodes, "seed_base": args.seed_base,
                 "jitter_m": args.jitter, "render": args.render,
+                "device": args.device,
                 "freeze_eps_rad": FREEZE_EPS_RAD, "freeze_ticks": FREEZE_TICKS,
                 "kick_ticks": KICK_TICKS, "kick_min_tick": KICK_MIN_TICK,
                 "config_sha": file_digest(DEFAULT_CONFIG),

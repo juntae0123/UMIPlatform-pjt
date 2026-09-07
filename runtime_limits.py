@@ -155,7 +155,31 @@ def pick_gpu() -> str:
     return str(others[0][1])
 
 
+def _unbuffer() -> None:
+    """Make stdout line-buffered so a redirected log shows progress.
+    stdout 을 줄 단위 버퍼로 바꿔서 리다이렉트된 로그에 진행이 보이게 한다.
+
+    Python buffers stdout in blocks when it is not a terminal, so
+    `nohup ... > log &` shows nothing until the buffer fills or the process exits.
+    2026-09-07 🟢: a live `probe_freeze` sat at one log line for two minutes and
+    looked dead. Every server command carried `PYTHONUNBUFFERED=1` by hand until
+    this module took the env vars over -- and it did not take that one.
+    파이썬은 stdout 이 터미널이 아니면 블록 단위로 버퍼링하므로
+    `nohup ... > log &` 는 버퍼가 차거나 프로세스가 끝날 때까지 아무것도 안 보인다.
+    2026-09-07 실측 🟢: 살아 있는 `probe_freeze` 가 2분간 로그 1줄에 머물러 죽은 것처럼
+    보였다. 서버 명령마다 손으로 `PYTHONUNBUFFERED=1` 을 붙이고 있었는데, 이 모듈이
+    환경변수를 인수하면서 **그것만 빠뜨렸다.**
+    """
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")   # 자식 프로세스용
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)   # 이미 열린 이 프로세스용
+        except Exception:
+            pass
+
+
 def _apply() -> None:
+    _unbuffer()
     for var in _THREAD_VARS:
         os.environ.setdefault(var, DEFAULT_THREADS)
     os.environ.setdefault("MUJOCO_GL", DEFAULT_MUJOCO_GL)
