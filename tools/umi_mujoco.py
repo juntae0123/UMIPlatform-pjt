@@ -48,11 +48,31 @@ from sim.mujoco.kinematics import (  # noqa: E402
     solve_pose_ik,
 )
 from umi.convert import ConversionError, normalize_joints  # noqa: E402
-from umi.ik import IKSolution, approach_axis_from_quat, matrix_to_quat, roll_residual_deg  # noqa: E402
+from umi.ik import (  # noqa: E402
+    IKSolution,
+    approach_axis_from_quat,
+    jaw_axis_from_quat,
+    matrix_to_quat,
+    roll_residual_deg,
+)
 from umi.ik import summarize  # noqa: E402
 
 N_JOINTS = 6
 GRIPPER_BODY = "gripper"
+WRIST_ROLL_IDX = 4
+ROLL_CORRECTION_SIGN = -1.0
+"""Sign of the wrist_roll correction, MEASURED 🟢 2026-09-07 not derived.
+
+`wrist_roll` rotates about the gripper body's local +z while the approach axis is
+its local -z, so the sign flips somewhere -- and which way depends on the MJCF's
+axis convention, not on anything I can read off a docstring. Both signs were run:
+-1 gave roll p95 0.0000 deg, +1 gave 88.0767 deg.
+`wrist_roll` 은 그리퍼 body 로컬 +z 둘레로 돌고 접근축은 로컬 -z 라서 어딘가에서
+부호가 뒤집힌다. 어느 쪽인지는 MJCF 의 축 규약에 달렸고 docstring 으로 알 수 없다.
+두 부호를 다 돌려봤다 — -1 이 roll p95 0.0000도, +1 이 88.0767도.
+
+⚠️ 그리퍼 형상이 바뀌면(로봇팔 변형 예정) 재측정해야 한다."""
+
 NORM_CROSSCHECK_ATOL = 1e-6
 """`sim.build_scene.normalize` computes in float32, `umi` in float64. Anything
 tighter than this compares the two dtypes, not the two formulas.
@@ -120,20 +140,72 @@ def eef_pose_from_joints(
     return np.asarray(pos, dtype=float).copy(), matrix_to_quat(r_eef)
 
 
+def signed_roll_error_rad(
+    quat_desired: np.ndarray, achieved_approach: np.ndarray, achieved_jaw: np.ndarray
+) -> float:
+    """Signed rotation about the achieved approach axis, folded to (-90, 90] degrees.
+    달성된 접근축 둘레의 부호 있는 회전. (-90, 90] 도로 접는다.
+
+    `umi.ik.roll_residual_deg` is unsigned because reporting wants a magnitude.
+    Correcting needs a direction, and the parallel jaw's 180-degree symmetry means a
+    +170 degree error is really -10 degrees -- correcting toward +170 walks away.
+    보고에는 크기만 필요해서 `roll_residual_deg` 는 부호가 없다. 보정에는 방향이
+    필요하고, 평행 턱의 180도 대칭 때문에 +170도 오차는 실제로 -10도다.
+    """
+    axis = np.asarray(achieved_approach, dtype=float)
+    axis = axis / np.linalg.norm(axis)
+
+    def proj(v: np.ndarray) -> np.ndarray:
+        v = np.asarray(v, dtype=float)
+        pp = v - np.dot(v, axis) * axis
+        n = float(np.linalg.norm(pp))
+        return pp / n if n > 1e-9 else np.zeros(3)
+
+    want = proj(jaw_axis_from_quat(quat_desired))
+    got = proj(achieved_jaw)
+    if not np.any(want) or not np.any(got):
+        return 0.0
+    ang = float(np.arctan2(float(np.dot(np.cross(got, want), axis)), float(np.dot(got, want))))
+    while ang > np.pi / 2:
+        ang -= np.pi
+    while ang <= -np.pi / 2:
+        ang += np.pi
+    return ang
+
+
 class MujocoIK:
     """`umi.ik.IKSolver` over `sim.mujoco.kinematics.solve_pose_ik`.
     `solve_pose_ik` 를 감싼 `umi.ik.IKSolver` 구현.
 
-    The 6-DOF pose is projected onto the five constraints the arm can hold:
-    position (3) and approach direction (2). `wrist_roll` is left free -- with it
-    fixed the solve becomes over-determined (5 constraints, 4 free joints) and the
-    position error, which is the one with a measured budget, is what gives way.
-    6자유도 pose 를 팔이 유지할 수 있는 5개 구속으로 투영한다. 위치 3 + 접근방향 2.
-    `wrist_roll` 은 열어둔다 — 고정하면 구속 5개에 자유관절 4개로 과결정이 되고,
-    실측 예산이 걸려 있는 위치 오차가 밀린다.
+    ## 자유도 배분 — 실측 🟢 2026-09-07, docstring 을 믿지 말고 재라
 
-    The discarded roll is measured per step, never reported as zero.
-    버린 롤은 스텝마다 계측한다. 0 으로 보고하지 않는다.
+    `wrist_roll` 만 흔들었을 때 (무작위 40자세 x 15각도):
+
+        파지점 이동   0.0000 mm      접근축 변화   0.000 도      턱축 변화 88.57 도
+        (wrist_flex: 282mm / 176도,  elbow_flex: 552mm / 180도)
+
+    `wrist_roll` 은 파지점과 접근축에 **영향이 정확히 0** 이고 턱 방향만 바꾼다.
+    `grasp.pinch_offset_local = [0, 0, -0.08]` 이 roll 축(그리퍼 로컬 z) 위에
+    정확히 놓여 있고 접근축이 그 축이라서 그렇다. 그래서 실제 계는 이렇다.
+
+        pan · lift · elbow_flex · wrist_flex (4개)  →  위치 3 + 접근축 2  (과결정)
+        wrist_roll (1개)                            →  roll 전담, 완전 독립
+
+    따라서 **roll 은 버릴 필요가 없다.** `wrist_roll` 에 대해 선형이고 결합이 0
+    이므로 보정이 **한 번에 정확**하다 — 실측 roll 잔차 중앙 0.0000도 · p95 0.0000도,
+    위치 오차 불변(0.0084mm). 탐색도 반복도 필요 없다.
+
+    ⚠️ `wrist_roll` 을 풀이에 열어두면(이전 구현) 야코비안에 영향 0 인 열이 생겨
+       감쇠 최소자승이 그 널 방향으로 표류한다. 그게 roll 잔차 47도의 원인이었다.
+       그래서 여기서는 `wrist_roll` 을 고정해 **4관절 문제로 풀고** 나중에 정한다.
+
+    ⚠️ 이 분해는 파지점이 roll 축 위에 있다는 데 전적으로 의존한다. 그리퍼 형상이
+       바뀌면(로봇팔 변형 예정) 무너진다. 재측정 대상이다.
+
+    ⚠️ `sim/mujoco/kinematics.py` docstring 은 "위치 3 + 접근방향 2 = 5로 정확히
+       결정된다 / 접근축 둘레 회전은 나머지 다섯과 독립적으로 고를 수 없다"고 쓰고
+       있다. 실측과 다르다 — 그 파일은 시뮬·정책 대화 소유이므로 고치지 않고
+       소유권 문서 "변경 예고" 로 전달한다.
     """
 
     def __init__(
@@ -144,6 +216,7 @@ class MujocoIK:
         crosscheck: bool = True,
         pos_tol_m: float = 1e-5,
         axis_tol_deg: float = 0.05,
+        match_roll: bool = True,
     ) -> None:
         """`pos_tol_m` and `axis_tol_deg` are tightened from `solve_pose_ik`'s
         defaults (1e-3 m, 1.0 deg) on purpose, and recorded as conditions.
@@ -168,6 +241,7 @@ class MujocoIK:
         self.cfg = cfg
         self.pos_tol_m = float(pos_tol_m)
         self.axis_tol_deg = float(axis_tol_deg)
+        self.match_roll = bool(match_roll)
         self.data = mujoco.MjData(model)
         self.pinch = np.asarray(cfg["grasp"]["pinch_offset_local"], dtype=float)
         self.ranges = joint_ranges(cfg)
@@ -204,6 +278,40 @@ class MujocoIK:
             )
         self.norm_crosscheck_max = worst
 
+    def _achieved(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Approach axis and jaw axis at a joint configuration.
+        주어진 관절 배치에서의 접근축과 턱 축."""
+        self.data.qpos[:N_JOINTS] = np.asarray(q, dtype=float)
+        mujoco.mj_forward(self.model, self.data)
+        bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, GRIPPER_BODY)
+        rot = self.data.xmat[bid].reshape(3, 3)
+        return -rot[:, 2], rot[:, 0]
+
+    def _roll_for(self, q: np.ndarray, quat_wxyz: np.ndarray) -> float:
+        """The `wrist_roll` value that puts the jaws where the demonstration had them.
+        시연의 턱 방향을 재현하는 `wrist_roll` 값.
+
+        Exact in one step, because roll is linear in `wrist_roll` with zero coupling
+        to position and approach axis (measured 🟢).
+        roll 이 `wrist_roll` 에 선형이고 위치·접근축과 결합이 0 이라 한 번에 정확하다.
+
+        If the corrected value leaves the joint range, the two equivalents at plus
+        and minus 180 degrees are tried first -- the parallel jaw is the same grasp
+        with the jaws swapped. Only if none fits is it clipped, and then the
+        shortfall shows up in `roll_residual_deg` rather than being hidden.
+        보정값이 관절 범위를 벗어나면 ±180도 등가값을 먼저 시도한다. 평행 턱은
+        180도 돌려도 두 턱이 자리를 바꿀 뿐 같은 파지다. 전부 안 맞으면 클립하고,
+        그 부족분은 숨기지 않고 `roll_residual_deg` 로 드러난다.
+        """
+        appr, jaw = self._achieved(q)
+        err = signed_roll_error_rad(quat_wxyz, appr, jaw)
+        lo, hi = self.ranges[WRIST_ROLL_IDX]
+        target = float(q[WRIST_ROLL_IDX]) + ROLL_CORRECTION_SIGN * err
+        for cand in (target, target + np.pi, target - np.pi):
+            if lo <= cand <= hi:
+                return float(cand)
+        return float(np.clip(target, lo, hi))
+
     def solve(
         self,
         pos_m: np.ndarray,
@@ -212,22 +320,28 @@ class MujocoIK:
         q_init: np.ndarray | None = None,
     ) -> IKSolution:
         desired_axis = approach_axis_from_quat(quat_wxyz)
+        seed = None if q_init is None else np.asarray(q_init, dtype=float)
+        # wrist_roll 은 위치·접근축에 영향이 0 이므로 풀이에서 고정한다 (실측 근거는
+        # 클래스 docstring). 어느 값으로 고정해도 결과가 같지만, 직전 값을 쓰면
+        # 궤적이 불필요하게 튀지 않는다.
+        held_roll = float(seed[WRIST_ROLL_IDX]) if seed is not None else 0.0
         res: IKResult = solve_pose_ik(
             self.model,
             target_xyz=np.asarray(pos_m, dtype=float),
             offset_local=self.pinch,
             desired_axis=desired_axis,
-            q_init=None if q_init is None else np.asarray(q_init, dtype=float),
+            q_init=seed,
+            wrist_roll=held_roll if self.match_roll else None,
             pos_tol=self.pos_tol_m,
             axis_tol_deg=self.axis_tol_deg,
         )
         q = np.asarray(res.qpos, dtype=float).copy()
 
-        self.data.qpos[:N_JOINTS] = q
-        mujoco.mj_forward(self.model, self.data)
-        bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, GRIPPER_BODY)
-        rot = self.data.xmat[bid].reshape(3, 3)
-        roll = roll_residual_deg(quat_wxyz, -rot[:, 2], rot[:, 0])
+        if self.match_roll:
+            q[WRIST_ROLL_IDX] = self._roll_for(q, quat_wxyz)
+
+        appr, jaw = self._achieved(q)
+        roll = roll_residual_deg(quat_wxyz, appr, jaw)
 
         # 수렴 판정은 sim 쪽 상수(5mm, 5도)를 그대로 쓴다. 임계값을 새로 지어내지
         # 않는다. 솔버에 준 정지 허용오차(pos_tol_m)와는 다른 것이다 — 이쪽은
