@@ -55,6 +55,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import runtime_limits  # noqa: E402  — numpy/torch 앞에 와야 한다
+
+runtime_limits.claim("audit_demos")
+
 from tracking.exp_log import log_run  # noqa: E402
 
 ARM = slice(0, 5)

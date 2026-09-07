@@ -43,6 +43,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import runtime_limits  # noqa: E402  — numpy/torch 앞에 와야 한다
+
+runtime_limits.claim("audit_demo_lift")
+
 from eval.rollout import rollout  # noqa: E402
 from policy.baselines import ReplayPolicy  # noqa: E402
 from sim.mujoco.build_scene import DEFAULT_CONFIG, load_config  # noqa: E402

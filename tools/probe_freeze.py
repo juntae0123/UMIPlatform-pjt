@@ -22,6 +22,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import runtime_limits  # noqa: E402  — numpy/torch 앞에 와야 한다
+
+runtime_limits.claim("probe_freeze")
+
 from eval.freeze import (  # noqa: E402
     FREEZE_EPS_RAD,
     paired_on_frozen,

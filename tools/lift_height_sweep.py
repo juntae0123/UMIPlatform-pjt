@@ -32,6 +32,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import runtime_limits  # noqa: E402  — numpy/torch 앞에 와야 한다
+
+runtime_limits.claim("lift_height_sweep")
+
 import numpy as np  # noqa: E402
 
 from eval.recovery import as_records, probe, summarise  # noqa: E402
