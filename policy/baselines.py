@@ -150,10 +150,25 @@ class ScriptedPickPolicy:
         self._cfg = env.cfg
         self._plan: list[np.ndarray] = []
         self._i = 0
+        # Counted because instruments compare this policy against
+        # `ScriptedFeedbackPolicy`, and a missing attribute reads as **zero
+        # failures** through `getattr(..., 0)` -- which is what happened on
+        # 2026-09-07: `lift_height_sweep` printed "lift IK 실패 0" for this policy
+        # at every height while the feedback expert showed 15, and the comparison
+        # was meaningless rather than informative.
+        # 계측기가 이 정책을 `ScriptedFeedbackPolicy` 와 비교하는데, 속성이 없으면
+        # `getattr(..., 0)` 을 지나 **실패 0** 으로 읽힌다. 2026-09-07 에 그것이
+        # 일어났다 — `lift_height_sweep` 이 모든 높이에서 이 정책의 "lift IK 실패"
+        # 를 0 으로 찍었고 피드백 전문가는 15 를 찍었는데, 그 비교는 정보가 아니라
+        # 무의미였다.
+        self.ik_failures = 0
+        self.ik_fail_by_phase: dict[str, int] = {}
 
     def reset(self, seed: int | None = None) -> None:
         """Re-plan against the object's current position.
         물체의 현재 위치로 계획을 다시 세운다."""
+        self.ik_failures = 0
+        self.ik_fail_by_phase = {}
         self._plan = self._build_plan()
         self._i = 0
 
@@ -194,6 +209,11 @@ class ScriptedPickPolicy:
                 continue
             res = solve_pose_ik(model, seg.target, offset, axis, q_init=seed_q, wrist_roll=0.0)
             if not res.ok:
+                # 구간 이름을 모르므로 필수/선택으로 구분해 센다. 선택 구간(들기)의
+                # 실패는 그 구간을 건너뛰는 것이고, 그러면 팔이 파지 자세에서 멈춘다.
+                phase = "required" if seg.required else "lift"
+                self.ik_failures += 1
+                self.ik_fail_by_phase[phase] = self.ik_fail_by_phase.get(phase, 0) + 1
                 if not seg.required:
                     # A failed lift skips its segment, as before the refactor.
                     # 들어올리기 실패는 그 구간만 건너뛴다. 리팩터링 이전과 같다.

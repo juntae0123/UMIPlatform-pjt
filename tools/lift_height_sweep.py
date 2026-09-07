@@ -32,6 +32,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np  # noqa: E402
+
 from eval.recovery import as_records, probe, summarise  # noqa: E402
 from policy.baselines import ScriptedFeedbackPolicy, ScriptedPickPolicy  # noqa: E402
 from sim.mujoco.build_scene import DEFAULT_CONFIG, load_config  # noqa: E402
@@ -65,8 +67,9 @@ def main() -> int:
 
     out: dict[str, dict[str, Any]] = {}
     detail: dict[str, list[dict[str, Any]]] = {}
-    print(f"{'높이':<8} {'정책':<14} {'성공':<10} {'성공률':<7}  95% 구간        lift IK 실패")
-    print("-" * 76)
+    print(f"{'명령':<7} {'정책':<13} {'성공':<9} {'성공률':<7}  95% 구간        "
+          f"{'달성 상승량 (mm)':<22} IK실패")
+    print("-" * 96)
     for h in heights:
         cfg = copy.deepcopy(base)
         cfg["grasp"]["lift_height_m"] = h
@@ -79,11 +82,23 @@ def main() -> int:
                 out[key] = summarise(res)
                 detail[key] = as_records(res)
                 s = out[key]
-                print(f"{h * 100:>5.1f}cm {name:<14} {s['successes']:>3}/{s['n']:<5} "
+                lifts = [r.lift_height_mm for r in res]
+                s["lift_mm_median"] = float(np.median(lifts))
+                s["lift_mm_q1"] = float(np.percentile(lifts, 25))
+                s["lift_mm_q3"] = float(np.percentile(lifts, 75))
+                s["commanded_mm"] = h * 1000
+                s["achieved_over_commanded"] = s["lift_mm_median"] / (h * 1000)
+                print(f"{h * 100:>4.1f}cm {name:<13} {s['successes']:>3}/{s['n']:<4} "
                       f"{s['rate'] * 100:>5.1f}%   "
                       f"CI {s['ci95'][0] * 100:>4.1f}~{s['ci95'][1] * 100:<5.1f}%  "
+                      f"중앙 {s['lift_mm_median']:>5.1f} "
+                      f"(Q1 {s['lift_mm_q1']:>5.1f} / Q3 {s['lift_mm_q3']:>5.1f}) "
+                      f"명령대비 {s['achieved_over_commanded'] * 100:>3.0f}%  "
                       f"{s['ik_fail_by_phase'].get('lift', 0)}")
         print("-" * 76)
+
+    print(f"\n판정 기준선 {need * 1000:.0f}mm. **달성 상승량이 그것을 넘어야 성공이고, "
+          "명령 높이가 아니다.** 명령대비 비율이 100% 가 아니면 들기가 잘려서 끝난 것이다")
 
     valid = [h for h in heights if h > need]
     if valid:
