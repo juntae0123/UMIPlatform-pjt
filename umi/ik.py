@@ -139,10 +139,21 @@ def roll_residual_deg(
     접근축에 수직인 평면으로 투영한다. 목표 축을 쓰면 위치 오차가 자세 수치에
     섞여 들어간다.
 
-    Returns 180.0 when the projection is degenerate (the jaw axis is parallel to
+    The jaw axis is **undirected**: a parallel gripper rotated 180 degrees about
+    the approach axis is the same physical grasp with the two jaws swapped. So the
+    result is folded into [0, 90] degrees. Measuring on [0, 180] reports a
+    perfectly good grasp as a 170-degree error — measured 🟢 2026-09-07, the FK→IK
+    round trip produced a p95 of 106.6 degrees that way, which was the metric
+    lying, not the solver failing.
+    턱 축은 **방향이 없다.** 평행 그리퍼를 접근축 둘레로 180도 돌리면 두 턱이
+    자리를 바꿀 뿐 같은 파지다. 그래서 결과를 [0, 90] 도로 접는다. [0, 180] 으로
+    재면 멀쩡한 파지를 170도 오차로 보고한다 — 실측 🟢 2026-09-07, FK→IK 왕복에서
+    p95 106.6도가 나왔고 그건 솔버가 실패한 게 아니라 계측기가 거짓말한 것이었다.
+
+    Returns 90.0 when the projection is degenerate (the jaw axis is parallel to
     the approach axis), which cannot happen for a valid right-handed frame and
     therefore means the input frame is malformed.
-    투영이 퇴화하면(턱 축이 접근축과 평행) 180.0 을 반환한다. 유효한 오른손
+    투영이 퇴화하면(턱 축이 접근축과 평행) 90.0 을 반환한다. 유효한 오른손
     좌표계에서는 일어날 수 없으므로, 그 값은 입력 프레임이 잘못됐다는 뜻이다.
     """
     axis = np.asarray(achieved_approach, dtype=float)
@@ -157,8 +168,9 @@ def roll_residual_deg(
     want = _project(jaw_axis_from_quat(q_desired_wxyz))
     got = _project(achieved_jaw)
     if not np.any(want) or not np.any(got):
-        return 180.0
-    cos = float(np.clip(np.dot(want, got), -1.0, 1.0))
+        return 90.0
+    # abs() 가 180도 대칭을 접는다. 결과는 [0, 90].
+    cos = float(np.clip(abs(np.dot(want, got)), 0.0, 1.0))
     return float(np.degrees(np.arccos(cos)))
 
 
