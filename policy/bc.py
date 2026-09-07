@@ -23,6 +23,16 @@ from typing import Any
 
 import numpy as np
 import torch
+
+# BLAS 캡(OMP/MKL/...)은 torch 의 intra-op 스레드를 항상 따라가지 않는다.
+# 여기서 명시로 건다 — 공유 머신이고, 이 모델은 1.3M 파라미터라 스레드가
+# 많아서 빨라지지 않는다. 실측 🟢 2026-09-07: 6개 프로세스에서 load average 165/80.
+try:
+    import runtime_limits as _rl
+
+    _rl.torch_threads()
+except Exception:  # 단독 실행 등 경로에 없을 때
+    pass
 import torch.nn as nn
 import yaml
 

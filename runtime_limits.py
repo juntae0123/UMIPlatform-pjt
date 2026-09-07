@@ -41,7 +41,7 @@ from pathlib import Path
 # ignored and the process still takes every core.
 # 스레드. numpy/torch 가 BLAS 백엔드를 로드하기 전에 정해져야 하므로 이 모듈이
 # 먼저 임포트돼야 한다. 나중에 설정하면 조용히 무시되고 코어를 다 먹는다.
-DEFAULT_THREADS = "2"
+DEFAULT_THREADS = os.environ.get("AI_THREADS", "2")
 _THREAD_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -182,12 +182,22 @@ _apply()
 
 
 def torch_threads(n: int | None = None) -> None:
-    """Cap torch's intra-op threads. Safe to call after torch is imported.
-    torch 의 intra-op 스레드를 제한한다. torch 임포트 후에 불러도 된다."""
+    """Cap torch's intra- and inter-op threads. Call right after torch is imported.
+    torch 의 intra-op·inter-op 스레드를 제한한다. torch 임포트 직후에 부른다.
+
+    The BLAS caps do not always reach torch's own thread pools, so this is set
+    explicitly rather than assumed.
+    BLAS 캡이 torch 자체 스레드 풀까지 항상 닿지는 않으므로 가정하지 않고 명시한다."""
+    k = int(n or DEFAULT_THREADS)
     try:
         import torch
 
-        torch.set_num_threads(int(n or DEFAULT_THREADS))
+        torch.set_num_threads(k)
+        # inter-op 은 한 번만 설정 가능하고 이후 호출은 예외다. 조용히 넘긴다.
+        try:
+            torch.set_num_interop_threads(max(1, k // 2))
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -221,6 +231,29 @@ def claim(name: str, stale_ok: bool = False) -> None:
 
     lock.write_text(f"{os.getpid()} {name}\n", encoding="utf-8")
     atexit.register(lambda: lock.unlink(missing_ok=True))
+    warn_if_busy()
+
+
+def warn_if_busy(frac: float = 0.7) -> None:
+    """Say so when the machine is already loaded by someone else.
+    머신이 이미 남의 작업으로 차 있으면 말한다.
+
+    Not a refusal -- we cannot tell whose load it is, and refusing on a shared box
+    would mean never running. But starting a render sweep into load 165 was how
+    the operators came to warn us 🟢, and a line on stdout is cheap.
+    거부는 아니다. 부하가 누구 것인지 알 수 없고, 공유 머신에서 거부하면 아무것도
+    못 돌린다. 다만 load 165 에 렌더 스윕을 얹은 것이 서버 측 경고를 부른 경로였고 🟢,
+    stdout 한 줄은 싸다.
+    """
+    try:
+        one, five, _ = os.getloadavg()
+        cores = os.cpu_count() or 1
+    except (OSError, AttributeError):
+        return
+    if one > cores * frac:
+        print(f"⚠️ 머신 부하가 이미 높다 (1분 {one:.0f} / {cores}코어). "
+              f"내 것이 아니면 나중에 돌려라. 스레드 캡 {DEFAULT_THREADS} 로 돈다.",
+              file=sys.stderr)
 
 
 def banner() -> str:
