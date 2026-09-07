@@ -244,6 +244,10 @@ class MujocoIK:
         self.axis_tol_deg = float(axis_tol_deg)
         self.match_roll = bool(match_roll)
         self.multistart = bool(multistart)
+        self.max_iters = 500
+        """`solve_pose_ik` 의 반복 한도. 도달 가능한 목표는 조기 종료하므로 기본값이
+        비용이 아니지만, **다양체 밖 목표는 한도를 전부 돈다** — 실험에서는 낮춘다.
+        실측: 다양체 밖 + 다중시작이 스텝당 8배 x 500반복으로 170초 타임아웃을 냈다."""
         self.data = mujoco.MjData(model)
         self.pinch = np.asarray(cfg["grasp"]["pinch_offset_local"], dtype=float)
         self.ranges = joint_ranges(cfg)
@@ -331,6 +335,7 @@ class MujocoIK:
                 wrist_roll=held_roll if self.match_roll else None,
                 pos_tol=self.pos_tol_m,
                 axis_tol_deg=self.axis_tol_deg,
+                max_iters=self.max_iters,
             )
             if best is None or not worse(cand, best):
                 best = cand
