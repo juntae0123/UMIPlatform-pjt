@@ -37,6 +37,7 @@ import numpy as np
 from contract.skills import GATE_MIN_RUNS, ROLLOUT_GATE
 from eval.stats import wilson_ci
 from paths import AI_ROOT, DEFAULT_EXP_LOG
+from policy.bc import DEFAULT_TRAIN_CONFIG
 from sim.mujoco.build_scene import DEFAULT_CONFIG
 from tracking.exp_log import file_digest, log_run
 from tracking.monitor import print_drift
@@ -80,6 +81,39 @@ def _latest_record(experiment: str, match: dict[str, Any]) -> dict[str, Any] | N
         if all(cond.get(k) == v for k, v in match.items()):
             found = rec
     return found
+
+
+def run_conditions(args: Any, train_seeds: list[int] | None = None) -> dict[str, Any]:
+    """The one place a repeat_runs condition set is built.
+    repeat_runs 조건 묶음을 만드는 **유일한** 자리.
+
+    Both the pre-run drift check and the EXP_LOG record read from here. They used
+    to be two separate literals, and on 2026-09-07 the drift check reported "no
+    change" for a run that had changed `image_noise_gray` and `tag` -- because
+    those keys had been added to one literal and not the other. A drift detector
+    that can itself drift is worse than none: it reports safety it has not checked.
+    실행 전 표류 검사와 EXP_LOG 기록이 **둘 다** 여기서 읽는다. 예전에는 두 개의
+    별도 리터럴이었고, 2026-09-07 에 `image_noise_gray` 와 `tag` 가 바뀐 실행을
+    표류 검사가 "동일하다"로 보고했다 -- 한쪽 리터럴에만 키를 넣었기 때문이다.
+    스스로 표류하는 표류 감지기는 없느니만 못하다. 검사하지 않은 안전을 보고한다."""
+    cond: dict[str, Any] = {
+        "runs": args.runs,
+        "epochs": args.epochs,
+        "episodes": args.episodes,
+        "eval_seed_base": args.eval_seed_base,
+        "jitter_m": args.jitter,
+        "tag": args.tag,
+        "image_noise_gray": args.image_noise,
+        # 씬 설정과 **학습 설정을 따로** 해싱한다. 예전에는 씬만 해싱해서
+        # bc.yaml 변경(epochs·lr·행동공간)이 표류 감지 밖에 있었다.
+        "config_sha": file_digest(DEFAULT_CONFIG),
+        "train_config_sha": file_digest(DEFAULT_TRAIN_CONFIG),
+        "gate": {"rollout": ROLLOUT_GATE, "min_runs": GATE_MIN_RUNS},
+    }
+    if train_seeds is not None:
+        cond["data"] = str(args.data)
+        cond["train_seeds"] = train_seeds
+    return cond
 
 
 def repeat(
@@ -215,15 +249,7 @@ def main() -> int:
         )
 
     # 조건 표류를 실행 **전에** 찍는다. 결과를 다 뽑은 뒤에 알면 늦다.
-    print_drift({
-        "runs": args.runs,
-        "epochs": args.epochs,
-        "episodes": args.episodes,
-        "eval_seed_base": args.eval_seed_base,
-        "jitter_m": args.jitter,
-        "config_sha": file_digest(DEFAULT_CONFIG),
-        "gate": {"rollout": ROLLOUT_GATE, "min_runs": GATE_MIN_RUNS},
-    })
+    print_drift(run_conditions(args))
 
     print(f"학습 {args.runs}회 × 롤아웃 {args.episodes}편 · 데이터 {args.data}")
     print(f"평가 시드 블록 {args.eval_seed_base}~{args.eval_seed_base + args.episodes - 1} "
@@ -269,19 +295,7 @@ def main() -> int:
             experiment="repeat_runs",
             author=args.author,
             issue="S15P21A103-34",
-            conditions={
-                "data": str(args.data),
-                "runs": args.runs,
-                "epochs": args.epochs,
-                "episodes": args.episodes,
-                "train_seeds": [r.seed for r in results],
-                "eval_seed_base": args.eval_seed_base,
-                "jitter_m": args.jitter,
-                "tag": args.tag,
-                "image_noise_gray": args.image_noise,
-                "config_sha": file_digest(DEFAULT_CONFIG),
-                "gate": {"rollout": ROLLOUT_GATE, "min_runs": GATE_MIN_RUNS},
-            },
+            conditions=run_conditions(args, [r.seed for r in results]),
             result={
                 **summary,
                 "passed": passed,

@@ -63,6 +63,14 @@ CLOSE_BAD_MM = 10.0   # 이보다 멀면 닫는 순간의 위치 오차가 실�
 # 지연은 참고값으로만 출력한다.
 CLOSE_LAG_TICKS = 5   # 참고 표시용 문턱. 판정에 쓰지 않는다 (30Hz 기준 0.17s)
 GRIP_SPAN_MIN = 0.05  # 명령 진폭이 이보다 작으면 닫는 동작 자체가 없다
+
+# 닫힘으로 인정하려면 하위 문턱 아래로 내려가 이만큼 **연속으로 머물러야** 한다.
+# 스크립트 정책은 계단식이라 아무 값이나 통하지만, 학습 정책은 연속 회귀 출력이라
+# 중간값을 스치듯 지나갔다가 되돌아온다. 2026-09-07 실측 🟢: bc seed3000 은
+# 틱 60 에 중간값(-0.478)을 -0.4957 로 스쳤다가 틱 66~84 에 -0.44→-0.25 로
+# 되돌아왔고, 실제로 닫힌 것은 틱 102 였다 — 옛 정의는 42틱(1.4초) 일찍 찍었다.
+CLOSE_HOLD_TICKS = 5      # 30Hz 기준 0.17초
+CLOSE_LOW_FRAC = 0.25     # 진폭의 하위 25% 아래여야 "닫는 쪽"으로 본다
 GATES: dict[str, str] = {
     "floor": "학습 정책 성공률 > hold 성공률 + 20%p. 못 넘으면 정책이 무의미하다.",
     "chance": "학습 정책 성공률 > zero 성공률 + 20%p. 못 넘으면 우연과 구분되지 않는다.",
@@ -249,13 +257,22 @@ def closing_moment(grips: list[float], xys: list[float]) -> tuple[int, float]:
     """When the gripper was commanded shut, and the distance to the object then.
     그리퍼를 닫으라고 명령한 시점과 그때 물체까지의 거리.
 
-    The command is effectively two-level (open, then shut), so the crossing of the
-    midpoint between its own max and min is the closing moment. Taking the
-    threshold from the episode's own commands keeps this free of a hard-coded
-    gripper value -- that value is hardware-dependent and lives in configs/.
-    명령은 사실상 두 수준(열기, 닫기)이라, 그 에피소드 자신의 최대·최소 중간값을
-    가로지르는 시점이 닫는 순간이다. 문턱을 에피소드 자체에서 뽑으므로 하드코딩된
-    그리퍼 값에 의존하지 않는다 — 그 값은 하드웨어 의존이고 configs/ 에 있다.
+    A scripted policy steps the command; a learned one regresses it and wobbles.
+    So the moment is not a threshold crossing but the first crossing that **holds**
+    -- brushing past the threshold and coming back is not closing. The threshold
+    comes from the episode's own command range, so no hardware value is hard-coded.
+    스크립트 정책은 명령을 계단식으로 바꾸지만 학습 정책은 회귀 출력이라 요동친다.
+    그래서 닫는 순간은 문턱 통과가 아니라 **유지되는** 첫 통과다 — 스치고 되돌아오는
+    것은 닫은 것이 아니다. 문턱은 에피소드 자신의 명령 범위에서 뽑으므로 하드웨어
+    값을 하드코딩하지 않는다.
+
+    ⚠️ 이 지표가 성립하는 조건: 그리퍼 명령이 **한 번 닫히면 유지**되는 정책.
+       닫았다 열었다를 반복하는 정책에는 첫 유지 구간만 잡히므로 무효다.
+
+    에피소드가 끝나 유지 구간이 잘린 경우(성공하면 `is_success()` 로 루프가 끊긴다)
+    남은 틱이 전부 문턱 아래이면 닫은 것으로 본다. 유지를 강제하면 **성공 에피소드가
+    "닫은 적 없음"으로 찍힌다** — 막으려는 것은 "스치고 복귀"이지 "닫은 채 종료"가
+    아니다. 다만 남은 틱이 1~2 개뿐이면 근거가 약하다는 점은 알고 쓴다.
 
     `(-1, nan)` means the gripper never made a closing move. That is a finding,
     not a missing value.
@@ -266,9 +283,16 @@ def closing_moment(grips: list[float], xys: list[float]) -> tuple[int, float]:
     lo, hi = min(grips), max(grips)
     if hi - lo < GRIP_SPAN_MIN:
         return -1, float("nan")
-    mid = lo + 0.5 * (hi - lo)
+
+    # 하위 문턱 아래로 내려가 CLOSE_HOLD_TICKS 만큼 **유지**된 첫 지점.
+    # 스치고 되돌아오는 것은 닫은 것이 아니다.
+    low = lo + CLOSE_LOW_FRAC * (hi - lo)
+    n = len(grips)
     for i, gv in enumerate(grips):
-        if gv <= mid:
+        if gv > low:
+            continue
+        end = min(i + CLOSE_HOLD_TICKS, n)
+        if all(g <= low for g in grips[i:end]) and end - i == min(CLOSE_HOLD_TICKS, n - i):
             return i + 1, xys[i]
     return -1, float("nan")
 
@@ -467,9 +491,10 @@ def main() -> None:
     if "bc" in shapes:
         sh = shapes["bc"]
         if sh["xy_median"] <= PRECISION_NEAR_MM:
-            read = "가까이 가서 못 잡는다 — 정밀도·파지 타이밍 문제"
+            read = ("가까이는 간다 — 접근은 되고 그 뒤가 안 된다. "
+                    "원인은 이 값으로 정해지지 않는다")
         elif sh["xy_median"] > PRECISION_FAR_MM:
-            read = "접근 자체가 틀린다 — 위치 추정 문제"
+            read = "접근 자체가 틀린다 — 위치 추정을 먼저 본다"
         else:
             read = "판정 유보 — 중간 영역"
         print(f"  [failure_shape] bc 실패 최소거리 중앙값 {sh['xy_median']:.1f}mm → {read}")
@@ -478,17 +503,18 @@ def main() -> None:
             cm, lg = cb["xy_at_close_median"], cb["lag_median"]
             drift = cm - sh["xy_median"]
             if cm > CLOSE_BAD_MM:
-                cread = ("닫는 순간의 위치 오차가 실패를 설명한다 → **정밀도 문제**. "
-                         "실측 허용오차상 ±15mm 는 1/4 만 성공한다")
+                cread = "실측 허용오차 밖이다 (±15mm 는 1/4 만 성공)"
             elif cm <= CLOSE_OK_MM:
-                cread = ("닫는 순간 위치는 충분하다 (실측 ±5mm 4/4) → 실패 원인이 위치가 "
-                         "아니다. 파지력·접촉 형상·도달 실패를 봐야 한다")
+                cread = "실측 허용오차 안이다 (±5mm 4/4) — 위치는 충분했다"
             else:
-                cread = "판정 유보 — 중간 영역 (±10mm 3/4)"
-            print(f"  [closing_moment] 닫는 순간 {cm:.1f}mm → {cread}")
+                cread = "중간 영역 (±10mm 3/4)"
+            print(f"  [closing_moment] 닫는 순간 {cm:.1f}mm — {cread}")
             print(f"                  최근접({sh['xy_median']:.1f}mm) 대비 {drift:+.1f}mm · "
-                  f"지연 {lg:+.0f}틱 — **지연은 판정 근거가 아니다** "
-                  f"(scripted 는 +30틱에 84% 🟢). 유지하는가 발산하는가가 갈린다")
+                  f"지연 {lg:+.0f}틱 (지연은 판정 근거가 아니다 — scripted 는 +30틱에 84% 🟢)")
+            print("                  ⚠️ 이 값은 실패 **원인**을 정하지 않는다. "
+                  "2026-09-07 실측 🟢: 닫는 순간 xy 2.7mm 로 제대로 잡고도 "
+                  "들어올리지 못해 실패한 사례가 있다. 원인은 폐루프 궤적을 봐야 한다 "
+                  "(tools/trace_execution.py)")
         elif cb["never_closed"]:
             print(f"  [closing_moment] 실패 {cb['never_closed']}건이 닫는 동작 자체를 하지 않았다 "
                   "→ 그리퍼 출력이 죽어 있다")
