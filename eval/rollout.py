@@ -332,7 +332,8 @@ def failure_shape(results: list[RolloutResult]) -> dict[str, Any] | None:
 
 
 def build_policies(
-    env: MujocoPickEnv, replay_from: Path | None, policy_ckpt: Path | None = None
+    env: MujocoPickEnv, replay_from: Path | None, policy_ckpt: Path | None = None,
+    device: str = "cpu",
 ) -> list[Policy]:
     """Assemble the baseline set, skipping replay if no episode is available.
     baseline 묶음을 만든다. 재생할 에피소드가 없으면 replay 는 건너뛴다.
@@ -348,7 +349,16 @@ def build_policies(
     if policy_ckpt is not None:
         from policy.bc import BCPolicy
 
-        bc = BCPolicy(policy_ckpt)
+        # `BCPolicy` defaults to cpu, and nothing recorded which device an
+        # evaluation ran on. Every logged BC rollout from v2 to v6 was therefore
+        # CPU inference, and the record does not say so 🟢 2026-09-07. The measured
+        # difference is about one episode in a hundred -- inside every interval we
+        # work with -- but "small" is not the same as "written down".
+        # `BCPolicy` 기본값이 cpu 이고, 평가가 어느 장치에서 돌았는지 아무 데도
+        # 기록되지 않았다. 그래서 v2~v6 의 모든 BC 롤아웃이 CPU 추론이었고 기록에는
+        # 그 말이 없다 🟢 2026-09-07. 실측 차이는 100편에 1편 정도로 우리가 쓰는 모든
+        # 구간 안에 들어가지만, **작다는 것과 적혀 있다는 것은 다르다.**
+        bc = BCPolicy(policy_ckpt, device=device)
         print(f"학습 정책 로드: {bc.describe()}")
         if bc.meta.get("trained_on") == "random_tensors":
             print("⚠️ 이 체크포인트는 **랜덤 텐서로 학습**된 것이다. 평가 결과에 의미가 없다.")
@@ -385,6 +395,10 @@ def main() -> None:
                         help="학습 정책 체크포인트. baseline 과 같은 조건으로 함께 채점한다")
     parser.add_argument("--render", action="store_true",
                         help="render observations; needed only for vision policies")
+    parser.add_argument("--policy-device", type=str, default="cpu",
+                        help="학습 정책 추론 장치. 기본 cpu — v2~v6 이력이 전부 cpu 라 "
+                             "비교선을 유지한다. 바꾸면 conditions 에 기록되므로 "
+                             "표류 감지기가 잡는다")
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
     parser.add_argument("--log", action="store_true")
     args = parser.parse_args()
@@ -421,7 +435,8 @@ def main() -> None:
     action_space: str | None = None
 
     with MujocoPickEnv(cfg, render=args.render, object_jitter_m=args.jitter) as env:
-        for policy in build_policies(env, args.replay_from, args.policy_ckpt):
+        for policy in build_policies(env, args.replay_from, args.policy_ckpt,
+                                     device=args.policy_device):
             rate, results = evaluate(env, policy, seeds, object_xy)
             if policy.name == "bc":
                 action_space = getattr(policy, "action_space", "joint_absolute")
@@ -551,6 +566,7 @@ def main() -> None:
                 "policy_ckpt": str(args.policy_ckpt) if args.policy_ckpt else None,
                 "policy_action_space": action_space,
                 "gates": GATES,
+                "policy_device": args.policy_device,
                 "reading_rules": {
                     "precision_near_mm": PRECISION_NEAR_MM, "precision_far_mm": PRECISION_FAR_MM,
                     "close_ok_mm": CLOSE_OK_MM, "close_bad_mm": CLOSE_BAD_MM,
