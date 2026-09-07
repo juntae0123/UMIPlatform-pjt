@@ -110,6 +110,16 @@ class ProbeResult:
     jaw_contacts_at_grasp: int
     obj_push_at_grasp_mm: float
     obj_push_final_mm: float
+    # `lift_height_mm` is read after the loop, and the loop **breaks on success**.
+    # So for a successful episode it is the height at the tick the threshold was
+    # crossed, not how high the arm can go. Measured 2026-09-07 🟢: commanded
+    # 6.0 / 6.5 / 7.0 cm all reported ~50.1-50.6 mm with Q1 exactly 50.0 -- the
+    # success criterion terminating the measurement, read as a physical ceiling.
+    # `lift_height_mm` 은 루프 뒤에 읽고, 루프는 **성공에서 끊긴다.** 그래서 성공한
+    # 에피소드에서는 판정선을 넘은 틱의 높이이고, 팔이 얼마나 올릴 수 있는지가
+    # 아니다. 2026-09-07 실측 🟢: 명령 6.0/6.5/7.0cm 이 전부 ~50.1~50.6mm 로
+    # Q1 이 정확히 50.0 이었다 — 판정 기준이 측정을 끝낸 것을 물리 한계로 읽었다.
+    max_lift_mm: float
     ik_failures: int
     ik_fail_by_phase: dict[str, int]
 
@@ -137,9 +147,18 @@ def probe(
     seed: int,
     cfg: dict[str, Any],
     spec: PerturbSpec | None,
+    stop_on_success: bool = True,
 ) -> ProbeResult:
     """Run one episode, optionally knocking the arm off its path partway through.
-    에피소드 하나를 돌린다. 지정하면 중간에 팔을 경로에서 밀어낸다."""
+    에피소드 하나를 돌린다. 지정하면 중간에 팔을 경로에서 밀어낸다.
+
+    `stop_on_success=False` runs to the tick limit so `max_lift_mm` measures how
+    high the arm actually gets. Pass it whenever the question is capability rather
+    than pass/fail -- with the default, a successful episode stops being measured
+    the moment it crosses the threshold.
+    `stop_on_success=False` 는 틱 제한까지 돌려서 `max_lift_mm` 이 팔이 실제로 어디까지
+    올리는지를 재게 한다. 합격/불합격이 아니라 **능력**을 묻는 경우에 쓴다.
+    기본값에서는 성공한 에피소드가 판정선을 넘는 순간 측정이 끝난다."""
     g_cfg = cfg["grasp"]
     close_mid = (float(g_cfg["open_cmd"]) + float(g_cfg["close_cmd"])) / 2.0
     obs = env.reset(seed=seed)
@@ -153,6 +172,7 @@ def probe(
 
     success = False
     ticks = 0
+    max_lift = -float("inf")
     min_xy, tick_at_min = float("inf"), -1
     close_tick, xy_at_close = -1, float("nan")
     # 닫는 명령이 나간 **틱에** 재면 아직 안 닫혀 있다. 첫 실행에서 턱접촉이
@@ -179,9 +199,11 @@ def probe(
             obj_now = env.object_position()
             jaws_at_grasp = env.jaw_contacts()
             push_at_grasp = float(np.hypot(*(obj_now[:2] - obj0[:2])))
+        max_lift = max(max_lift, env.lift_height())
         if env.is_success():
             success = True
-            break
+            if stop_on_success:
+                break
 
     obj_end = env.object_position()
     return ProbeResult(
@@ -200,6 +222,7 @@ def probe(
             round(push_at_grasp * 1000, 2) if push_at_grasp == push_at_grasp else float("nan")
         ),
         obj_push_final_mm=round(float(np.hypot(*(obj_end[:2] - obj0[:2]))) * 1000, 2),
+        max_lift_mm=round(max_lift * 1000, 2),
         ik_failures=int(getattr(policy, "ik_failures", 0)),
         ik_fail_by_phase=dict(getattr(policy, "ik_fail_by_phase", {}) or {}),
     )

@@ -77,12 +77,15 @@ def main() -> int:
             for name, ctor in (("scripted", ScriptedPickPolicy),
                                ("scripted_fb", ScriptedFeedbackPolicy)):
                 pol = ctor(env)
-                res = [probe(env, pol, s, cfg, None) for s in seeds]
+                # 성공에서 끊지 않는다 — 여기서 묻는 것은 합격 여부가 아니라
+                # 팔이 얼마나 올릴 수 있는가다. 기본값으로는 성공한 편의 상승량이
+                # 판정선을 넘는 순간의 값이 되어 물리 한계처럼 읽힌다 🟢 2026-09-07.
+                res = [probe(env, pol, s, cfg, None, stop_on_success=False) for s in seeds]
                 key = f"{h}|{name}"
                 out[key] = summarise(res)
                 detail[key] = as_records(res)
                 s = out[key]
-                lifts = [r.lift_height_mm for r in res]
+                lifts = [r.max_lift_mm for r in res]
                 s["lift_mm_median"] = float(np.median(lifts))
                 s["lift_mm_q1"] = float(np.percentile(lifts, 25))
                 s["lift_mm_q3"] = float(np.percentile(lifts, 75))
@@ -91,14 +94,15 @@ def main() -> int:
                 print(f"{h * 100:>4.1f}cm {name:<13} {s['successes']:>3}/{s['n']:<4} "
                       f"{s['rate'] * 100:>5.1f}%   "
                       f"CI {s['ci95'][0] * 100:>4.1f}~{s['ci95'][1] * 100:<5.1f}%  "
-                      f"중앙 {s['lift_mm_median']:>5.1f} "
+                      f"최대 중앙 {s['lift_mm_median']:>5.1f} "
                       f"(Q1 {s['lift_mm_q1']:>5.1f} / Q3 {s['lift_mm_q3']:>5.1f}) "
                       f"명령대비 {s['achieved_over_commanded'] * 100:>3.0f}%  "
                       f"{s['ik_fail_by_phase'].get('lift', 0)}")
         print("-" * 76)
 
-    print(f"\n판정 기준선 {need * 1000:.0f}mm. **달성 상승량이 그것을 넘어야 성공이고, "
-          "명령 높이가 아니다.** 명령대비 비율이 100% 가 아니면 들기가 잘려서 끝난 것이다")
+    print(f"\n판정 기준선 {need * 1000:.0f}mm. 상승량은 **에피소드 전체의 최댓값**이다 "
+          "— 성공에서 끊지 않고 틱 제한까지 돌린다. 그렇게 하지 않으면 성공한 편의 "
+          "값이 판정선을 넘은 순간의 높이가 되어 물리 한계처럼 읽힌다")
 
     valid = [h for h in heights if h > need]
     if valid:
