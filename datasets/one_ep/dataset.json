@@ -1,0 +1,68 @@
+{
+  "contract_version": "0.2.0-provisional",
+  "status": "PROVISIONAL — S15P21A103-27 미확정, 트랙 A 확인 필요",
+  "observation": {
+    "image": {
+      "shape": [
+        3,
+        224,
+        224
+      ],
+      "dtype": "uint8",
+      "layout": "CHW"
+    },
+    "state": {
+      "shape": [
+        6
+      ],
+      "dtype": "float32",
+      "range": [
+        -1.0,
+        1.0
+      ]
+    },
+    "state_timestamp": {
+      "shape": [],
+      "dtype": "float64",
+      "unit": "s"
+    }
+  },
+  "action": {
+    "shape": [
+      6
+    ],
+    "dtype": "float32",
+    "range": [
+      -1.0,
+      1.0
+    ],
+    "meaning": "목표 관절각 5개 + 그리퍼, 정규화된 값"
+  },
+  "action_timestamp": {
+    "shape": [],
+    "dtype": "float64",
+    "unit": "s"
+  },
+  "skill_ids_allowed": [
+    "pick_place",
+    "sort_two",
+    "align_fixture",
+    "present_inspect",
+    "line_up"
+  ],
+  "joint_order": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "gripper"
+  ],
+  "normalization": "x_norm = 2*(x_rad - lo)/(hi - lo) - 1, lo/hi = configs/so101.yaml joint range",
+  "episodes": [
+    "ep_00000"
+  ],
+  "n_episodes": 1,
+  "verified_by": "김준태(트랙B)",
+  "contract_violations": 0
+}
