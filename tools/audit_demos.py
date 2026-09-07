@@ -166,6 +166,9 @@ def main() -> int:
         d_lab = float(np.linalg.norm(tg[end, ARM] - tg[end - 1, ARM]))
         jumps.append({"obs": d_obs, "label": d_lab,
                       "ratio": d_lab / d_obs if d_obs > 1e-12 else float("inf")})
+    if len(jumps) < max(5, len(eps) // 10):
+        print(f"2. ~0 구간 종료 경계 — **해석 불가.** ~0 구간이 있는 에피소드가 "
+              f"{len(jumps)}/{len(eps)} 뿐이다. 아래 수치를 읽지 마라\n")
     if jumps:
         print("2. ~0 구간 종료 경계 — 관측은 얼마나 변하고 라벨은 얼마나 뛰는가")
         print(f"   관측 변화 |Δstate|   중앙값 {np.median([j['obs'] for j in jumps]):.6f}")
@@ -211,8 +214,46 @@ def main() -> int:
         print(f"   {label}  n={len(rows)}")
         print(f"     state 거리 중앙 {np.median(ds):.5f} · 라벨 거리 중앙 "
               f"{np.median(dl) * 100:5.1f}% · 라벨거리>30% 인 비율 {np.mean(dl > 0.30) * 100:5.1f}%")
+    if same_ep:
+        n_bad = sum(1 for r in same_ep if r["d_label_rel"] > 0.30)
+        print(f"   → 전체 표본 대비: {n_bad}/{len(sample)} = {n_bad / len(sample) * 100:.1f}%")
+        print("     (같은에피소드 쌍 안의 비율만 보면 과장된다. 두 분모를 함께 읽는다)")
     print("   ⚠️ 같은 에피소드 쪽에서 state 거리가 작은데 라벨 거리가 크면, "
           "이미지로도 해소되지 않는 앨리어싱이다\n")
+
+    # --- 4. 관측 정지 창 -------------------------------------------------------
+    # 앨리어싱의 실체는 "팔 델타 0" 이 아니다. state 6차원에 그리퍼 위치가 들어 있어서
+    # 닫는 동안 그리퍼 state 가 단조 변하는 구간은 관측상 구분된다. 진짜 모호한 곳은
+    # **그리퍼가 물체에 물려 포화되고 팔도 멈춘** 창이다. 거기서는 관측이 정지하고
+    # 라벨만 바뀌므로 단일 프레임 모델이 "언제 들어올릴지"를 알 수 없다.
+    # dwell(v4) 이 주입한 15틱이 정확히 이 창의 프레임이었다 — v4 가 0/300 을 낸 것이
+    # 단순 라벨 불균형이 아니라 이 창의 확대였을 가능성이 여기서 갈린다.
+    print("4. 관측 정지 창 — 그리퍼 state 포화 AND 팔 정지 (단일 프레임으로 구분 불가한 구간)")
+    win_lens, win_starts, win_label_mags, tail_after = [], [], [], []
+    for e in eps:
+        st = e["state"]
+        tg = target(st, e["action"])
+        d_arm = np.linalg.norm(np.diff(st[:, ARM], axis=0), axis=1)
+        d_grip = np.abs(np.diff(st[:, GRIP]))
+        ta = 0.05 * d_arm.max() if d_arm.max() > 0 else 0.0
+        tgp = 0.05 * d_grip.max() if d_grip.max() > 0 else 0.0
+        static = (d_arm <= ta) & (d_grip <= tgp)
+        L, s0 = longest_run(static)
+        win_lens.append(L); win_starts.append(s0)
+        if L > 0:
+            win_label_mags.append(float(np.median(np.linalg.norm(tg[s0:s0 + L, ARM], axis=1))))
+            tail_after.append(len(st) - (s0 + L))
+    print(f"   가장 긴 정지 창   중앙값 {np.median(win_lens):5.1f}틱 = {np.median(win_lens) / 30:.2f}초 "
+          f"(Q1 {np.percentile(win_lens, 25):.0f} / Q3 {np.percentile(win_lens, 75):.0f})")
+    print(f"   시작 위치         중앙값 {np.median(win_starts):5.1f}틱 "
+          f"(에피소드 길이 중앙 {np.median(ep_lens):.0f}틱)")
+    if win_label_mags:
+        print(f"   창 안 라벨 크기   중앙값 {np.median(win_label_mags):.6f} "
+              f"(에피소드 최대 대비 {np.median(win_label_mags) / scale * 100:.1f}%)")
+        print(f"   창 이후 남은 틱   중앙값 {np.median(tail_after):5.1f}틱")
+    print("   ⚠️ 판정 규칙 (결과 보기 전 확정): 창 중앙값 >= 10틱 이면 zero-delta/앨리어싱 "
+          "계열이 살아 있다 → 재표집 ablation 착수. < 3틱 이면 이 계열을 내리고 "
+          "접근 발산 계열을 우선한다\n")
 
     if args.log:
         rec = log_run(
@@ -232,6 +273,14 @@ def main() -> int:
                 "boundary_label_delta_median": float(np.median([j["label"] for j in jumps])) if jumps else None,
                 "alias_same_ep_label_dist_median": float(np.median([r["d_label_rel"] for r in same_ep])) if same_ep else None,
                 "alias_same_ep_frac_over_30pct": float(np.mean([r["d_label_rel"] > 0.30 for r in same_ep])) if same_ep else None,
+                "static_window_ticks_median": float(np.median(win_lens)),
+                "static_window_ticks_q1": float(np.percentile(win_lens, 25)),
+                "static_window_ticks_q3": float(np.percentile(win_lens, 75)),
+                "static_window_start_median": float(np.median(win_starts)),
+                "static_window_label_mag_median": float(np.median(win_label_mags)) if win_label_mags else None,
+                "alias_same_ep_frac_of_all_samples": (
+                    float(sum(1 for r in same_ep if r["d_label_rel"] > 0.30) / len(sample))
+                    if same_ep else None),
                 "alias_cross_ep_label_dist_median": float(np.median([r["d_label_rel"] for r in cross_ep])) if cross_ep else None,
             },
         )
