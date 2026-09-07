@@ -217,6 +217,7 @@ class MujocoIK:
         pos_tol_m: float = 1e-5,
         axis_tol_deg: float = 0.05,
         match_roll: bool = True,
+        multistart: bool = True,
     ) -> None:
         """`pos_tol_m` and `axis_tol_deg` are tightened from `solve_pose_ik`'s
         defaults (1e-3 m, 1.0 deg) on purpose, and recorded as conditions.
@@ -242,6 +243,7 @@ class MujocoIK:
         self.pos_tol_m = float(pos_tol_m)
         self.axis_tol_deg = float(axis_tol_deg)
         self.match_roll = bool(match_roll)
+        self.multistart = bool(multistart)
         self.data = mujoco.MjData(model)
         self.pinch = np.asarray(cfg["grasp"]["pinch_offset_local"], dtype=float)
         self.ranges = joint_ranges(cfg)
@@ -277,6 +279,69 @@ class MujocoIK:
                 f"다르다 (허용 {NORM_CROSSCHECK_ATOL:.0e}). 두 구현이 갈라졌다"
             )
         self.norm_crosscheck_max = worst
+
+    def _seed_grid(self) -> list[np.ndarray]:
+        """Deterministic seeds for a solve that has no previous solution to start from.
+        직전 해가 없는 풀이에 쓸 결정적 시드 목록.
+
+        MEASURED 🟢 2026-09-07: every IK failure in the 20-episode pass-through was
+        an **unseeded** solve. `convert()` does not advance `q_prev` on failure, so a
+        failed first step leaves the next steps unseeded too -- ep7 steps 0,1,2 all
+        solved from home and all failed, recovering at step 3 when the target drifted
+        into home's basin. Not a singularity: the failures' worst constraint-Jacobian
+        sigma_min (0.02762) is larger than that of 13.5% of the successful steps, and
+        seeding with the true configuration converged 3/3 to 0.0000mm.
+        실측 🟢: 20편 관통에서 IK 실패는 전부 **시드 없는** 풀이였다. `convert()` 는
+        실패 시 `q_prev` 를 갱신하지 않으므로 첫 스텝이 실패하면 다음 스텝들도 시드가
+        없다 — ep7 의 0·1·2 가 모두 원점에서 풀려 모두 실패하고, 목표가 원점의 수렴
+        분지로 들어온 step 3 에서 회복했다. 특이자세가 아니다: 실패의 최악
+        sigma_min(0.02762)보다 작은 성공 스텝이 13.5% 있고, 참값 시딩은 3/3 이
+        0.0000mm 로 수렴했다.
+
+        Only unseeded steps pay for this -- normally one per episode.
+        비용은 시드 없는 스텝만 낸다. 보통 에피소드당 한 번이다.
+        """
+        lo, hi = self.ranges[:, 0], self.ranges[:, 1]
+        mid = 0.5 * (lo + hi)
+        half = 0.5 * (hi - lo)
+        seeds = [np.zeros(N_JOINTS), mid.copy()]
+        for frac in (0.35, -0.35, 0.6, -0.6, 0.85, -0.85):
+            seeds.append(mid + frac * half)
+        return seeds
+
+    def _best_unseeded(
+        self, pos_m: np.ndarray, desired_axis: np.ndarray, held_roll: float
+    ) -> IKResult:
+        """Multi-start over `_seed_grid`, keeping the usable solve with least error.
+        `_seed_grid` 다중시작. 쓸 수 있는 해 중 오차가 가장 작은 것을 남긴다."""
+        best: IKResult | None = None
+
+        def worse(cand: IKResult, ref: IKResult) -> bool:
+            key_c = (not cand.within_limits, cand.pos_error_m, cand.axis_error_deg)
+            key_r = (not ref.within_limits, ref.pos_error_m, ref.axis_error_deg)
+            return key_c >= key_r
+
+        for seed in self._seed_grid():
+            cand = solve_pose_ik(
+                self.model,
+                target_xyz=np.asarray(pos_m, dtype=float),
+                offset_local=self.pinch,
+                desired_axis=desired_axis,
+                q_init=seed,
+                wrist_roll=held_roll if self.match_roll else None,
+                pos_tol=self.pos_tol_m,
+                axis_tol_deg=self.axis_tol_deg,
+            )
+            if best is None or not worse(cand, best):
+                best = cand
+            if (
+                best.within_limits
+                and best.pos_error_m < self.pos_tol_m
+                and best.axis_error_deg < self.axis_tol_deg
+            ):
+                break  # 더 볼 필요 없다
+        assert best is not None
+        return best
 
     def _achieved(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Approach axis and jaw axis at a joint configuration.
@@ -325,16 +390,19 @@ class MujocoIK:
         # 클래스 docstring). 어느 값으로 고정해도 결과가 같지만, 직전 값을 쓰면
         # 궤적이 불필요하게 튀지 않는다.
         held_roll = float(seed[WRIST_ROLL_IDX]) if seed is not None else 0.0
-        res: IKResult = solve_pose_ik(
-            self.model,
-            target_xyz=np.asarray(pos_m, dtype=float),
-            offset_local=self.pinch,
-            desired_axis=desired_axis,
-            q_init=seed,
-            wrist_roll=held_roll if self.match_roll else None,
-            pos_tol=self.pos_tol_m,
-            axis_tol_deg=self.axis_tol_deg,
-        )
+        if seed is None and self.multistart:
+            res: IKResult = self._best_unseeded(pos_m, desired_axis, held_roll)
+        else:
+            res = solve_pose_ik(
+                self.model,
+                target_xyz=np.asarray(pos_m, dtype=float),
+                offset_local=self.pinch,
+                desired_axis=desired_axis,
+                q_init=seed,
+                wrist_roll=held_roll if self.match_roll else None,
+                pos_tol=self.pos_tol_m,
+                axis_tol_deg=self.axis_tol_deg,
+            )
         q = np.asarray(res.qpos, dtype=float).copy()
 
         if self.match_roll:
