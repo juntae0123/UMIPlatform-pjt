@@ -29,11 +29,33 @@ Any deviation is a defect in the pair, not in the policy.
 두 함수가 정확한 역이면 `action` 은 부동소수점 정밀도로 `recorded_action_t` 와 같고,
 롤아웃은 직접 재생과 **시드별로** 일치해야 한다. 어긋나면 정책이 아니라 그 쌍의 결함이다.
 
-The shift variants (-1, 0, +1) are the pairing test: the deviation must be smallest
-at 0. If a shifted pairing reproduces the recording better, `state_t` is stored
-against the wrong action.
-shift 변형(-1, 0, +1)은 페어링 검사다. 편차가 0 에서 최소여야 한다. 밀린 페어링이
-기록을 더 잘 재현하면 `state_t` 가 엉뚱한 행동과 저장돼 있는 것이다.
+**This tool cannot test the pairing, and the first version claimed it could.**
+2026-09-07 🟢: shift -1 and shift 0 returned *identical* deviations (1.86e-09 max,
+5.82e-11 median) and identical 20/20 rollout vectors, and the verdict picked -1
+only because ties break by list order. The reason is structural -- the deviation is
+`|to_action(training_target(rec_j)) - rec_j|`, a round-trip error on whichever
+action index was used, so it does not depend on the shift at all. And the rollout
+cannot tell either: a one-tick lag in an absolute position command is absorbed by
+the controller, which is the same thing measured when an initial displacement of
+±0.3 rad left the open-loop expert at 87.0% unchanged.
+**이 도구는 페어링을 검사할 수 없고, 첫 판은 할 수 있다고 주장했다.**
+2026-09-07 🟢: shift -1 과 shift 0 이 **동일한** 편차(최대 1.86e-09, 중앙 5.82e-11)와
+동일한 20/20 롤아웃 벡터를 냈고, 판정이 -1 을 고른 것은 동점이 목록 순서로 깨졌기
+때문이다. 이유는 구조적이다 — 편차는 `|to_action(training_target(rec_j)) − rec_j|`,
+즉 어느 인덱스를 썼든 그 행동의 왕복 오차이므로 shift 와 무관하다. 롤아웃도 못
+가른다. 절대 위치 명령의 한 틱 지연은 제어기가 흡수하는데, 그건 초기 변위 ±0.3 rad
+에서도 개루프 전문가가 87.0% 를 유지한 것과 같은 현상이다.
+
+So the shift rows are printed as information, not as a gate. The pairing itself is
+established by the collector's loop: `data.ctrl[...] = cmd` then `rec.capture(data)`
+then `mj_step` -- `state_t` is the observation before `action_t` is applied, with no
+index arithmetic anywhere. A sentinel-action test belongs to the real-robot and UMI
+path (S15P21A103-30), where separate streams make an off-by-one possible.
+그래서 shift 행은 게이트가 아니라 정보로 찍는다. 페어링 자체는 수집 루프가
+보장한다 — `data.ctrl[...] = cmd` → `rec.capture(data)` → `mj_step` 이므로
+`state_t` 는 `action_t` 적용 **전**의 관측이고 인덱스 산술이 어디에도 없다.
+sentinel action 검사는 스트림이 분리돼 off-by-one 이 가능한 **실물·UMI 경로**
+(S15P21A103-30)의 것이다.
 
     python tools/probe_contract.py datasets/sim_pick_v5 --ckpt checkpoints/bc/sim_pick_v5_seed0.pt --episodes 20 --log
 
@@ -181,18 +203,21 @@ def main() -> int:
     z = out["shift0"]
     exact = z["max_dev"] < 1e-5
     agree = z["agree_with_direct"] == len(direct)
-    best = min(shifts, key=lambda s: out[f"shift{s}"]["max_dev"])
+    devs = {s: out[f"shift{s}"]["max_dev"] for s in shifts}
     print("\n판정 (결과 보기 전 확정):")
     print(f"  [round_trip] shift 0 최대 편차 {z['max_dev']:.2e} < 1e-5 → "
           f"{'통과' if exact else '**실패 — training_target 과 to_action 이 역이 아니다**'}")
     print(f"  [rollout_match] 시드별 성공/실패 벡터 일치 {z['agree_with_direct']}/{len(direct)} → "
           f"{'통과' if agree else '**실패 — 같은 행동인데 결과가 다르다**'}")
-    print(f"  [pairing] 편차 최소 shift = {best:+d} → "
-          f"{'통과' if best == 0 else '**실패 — 페어링이 밀려 있다**'}")
-    ok = exact and agree and best == 0
+    ok = exact and agree
     print(f"\n→ {'배포 경로 통과. 다음 실험으로 진행한다' if ok else '**전면 중지. 배포 경로부터 고친다**'}")
     if not ok:
         print("  이 상태의 롤아웃 수치는 정책에 대한 진술이 아니다.")
+    print("\n[페어링] **이 도구로는 검사할 수 없다.** 편차 지표가 shift 와 무관하고"
+          f"(측정 {devs}), 절대 위치 명령의 한 틱 지연은 제어기가 흡수한다.")
+    print("  페어링은 수집 루프가 보장한다 — ctrl 설정 → capture → mj_step 이므로 "
+          "state_t 는 action_t 적용 전의 관측이고 인덱스 산술이 없다 (코드 확인 🟡).")
+    print("  sentinel action 검사는 스트림이 분리된 실물·UMI 경로(S15P21A103-30)의 것이다.")
 
     if args.log:
         rec = log_run(
@@ -204,7 +229,9 @@ def main() -> int:
                         "config_sha": file_digest(DEFAULT_CONFIG),
                         "code_sha_at_launch": CODE_SHA_AT_LAUNCH},
             result={"summary": out, "round_trip_passed": exact,
-                    "rollout_match_passed": agree, "pairing_passed": best == 0,
+                    "rollout_match_passed": agree,
+                    "pairing_testable": False,
+                    "pairing_note": "편차 지표가 shift 와 무관하다. 이 도구로는 검사 불가",
                     "t0_passed": ok},
         )
         print(f"\nEXP_LOG.jsonl 기록 (git {rec['git_rev']}, dirty={rec['git_dirty']})")
