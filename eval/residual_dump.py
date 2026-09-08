@@ -90,6 +90,61 @@ class EpisodeDump:
         return int(self.demo.shape[0])
 
 
+def heldout_episode_ids(
+    n_episodes: int, val_fraction: float, seed: int
+) -> list[int]:
+    """Which episode indices `split_by_episode` holds out, without loading data.
+    `split_by_episode` 가 홀드아웃하는 에피소드 인덱스. 데이터를 읽지 않는다.
+
+    Reimplements the two lines of `policy.train_bc.split_by_episode` that decide
+    the episode set, because that function needs a built Dataset -- which loads
+    every image -- to return the same answer. Duplication is a hazard, so the
+    contract is explicit: the permutation and the count must stay identical to
+    that function. `split_by_episode` returns its `val_eps` list, so the two can
+    be cross-checked directly whenever a Dataset is on hand.
+    `policy.train_bc.split_by_episode` 에서 에피소드 집합을 정하는 두 줄을 다시
+    구현한다. 그 함수는 같은 답을 내려면 Dataset 이 필요하고, Dataset 은 이미지를
+    전부 읽는다. 중복은 위험하므로 계약을 명시한다 — 순열과 개수가 그 함수와
+    **동일하게 유지되어야 한다.** `split_by_episode` 는 `val_eps` 를 반환하므로,
+    Dataset 이 있는 자리에서는 두 값을 직접 대조할 수 있다.
+
+    ⚠️ Episode index is the position in `sorted(glob("*.npz"))`, and the training
+       Dataset skips episodes that fail `validate`. One rejected episode shifts
+       every index after it. The caller must check `n_episodes` against the
+       checkpoint's recorded count before trusting this.
+    ⚠️ 에피소드 인덱스는 `sorted(glob("*.npz"))` 의 순서이고, 학습 Dataset 은
+       `validate` 를 통과하지 못한 편을 건너뛴다. 한 편이 탈락하면 그 뒤 인덱스가
+       전부 밀린다. 호출자는 이 값을 믿기 전에 체크포인트가 기록한 편 수와
+       `n_episodes` 를 대조해야 한다.
+    """
+    if val_fraction <= 0.0 or n_episodes <= 1:
+        return []
+    rng = np.random.default_rng(seed)
+    eps = rng.permutation(n_episodes)
+    n_val = max(1, int(round(n_episodes * val_fraction)))
+    return sorted(int(e) for e in eps[:n_val])
+
+
+def seed_from_ckpt_name(name: str) -> int | None:
+    """The training seed a checkpoint filename claims, or None.
+    체크포인트 파일명이 주장하는 학습 시드. 없으면 None.
+
+    `--seed` on the command line overrides `train.seed` in the config but is not
+    written back into `train_config`, so a checkpoint's metadata reports the
+    config's seed (0) no matter which seed actually trained it. The filename is
+    the only surviving record, which makes this a convention and not a fact --
+    the caller prints what it inferred and takes an override.
+    명령행 `--seed` 는 설정의 `train.seed` 를 덮어쓰지만 `train_config` 에 다시
+    기록되지 않는다. 그래서 어떤 시드로 학습했든 체크포인트 메타는 설정값(0)을
+    보고한다. 파일명이 유일하게 남은 기록이고, 그래서 이것은 사실이 아니라
+    **관례**다 — 호출자는 추론한 값을 출력하고 재정의를 받는다.
+    """
+    import re
+
+    m = re.search(r"_seed(\d+)", name)
+    return int(m.group(1)) if m else None
+
+
 def phase_bounds(cfg: dict[str, Any], n_steps: int) -> list[tuple[str, int, int]]:
     """Tick ranges of the expert's phases, derived from config -- never hardcoded.
     전문가 위상의 틱 구간. config 에서 유도하고 하드코딩하지 않는다.

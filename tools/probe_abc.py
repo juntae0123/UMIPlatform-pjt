@@ -36,6 +36,7 @@ rules and the "round 2 runs regardless of round 1" commitment are there, not her
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,9 @@ import runtime_limits  # noqa: E402  — numpy/torch 앞에 와야 한다
 
 runtime_limits.claim("probe_abc")
 
-from eval.residual_dump import CONDITIONS, assemble, read_dump  # noqa: E402
+from eval.residual_dump import (  # noqa: E402
+    CONDITIONS, assemble, heldout_episode_ids, read_dump, seed_from_ckpt_name,
+)
 from eval.rollout import rollout  # noqa: E402
 from eval.stats import wilson_ci  # noqa: E402
 from policy.baselines import ReplayPolicy  # noqa: E402
@@ -72,6 +75,8 @@ SEED_BASE = 1_000_000
 
 
 def _fmt(successes: int, n: int) -> str:
+    if n == 0:
+        return "   -/0"
     lo, hi = wilson_ci(successes, n)
     return f"{successes:>3}/{n} = {successes / n * 100:5.1f}%   [{lo * 100:5.1f}, {hi * 100:5.1f}]"
 
@@ -80,15 +85,41 @@ def _overlaps(a: tuple[float, float], b: tuple[float, float]) -> bool:
     return a[0] <= b[1] and b[0] <= a[1]
 
 
+def object_xy(npz: Path) -> tuple[float, float] | None:
+    """Where this episode recorded the object, read from its own metadata.
+    이 에피소드가 기록한 물체 위치. 자기 메타데이터에서 읽는다.
+
+    Read here rather than from the dump so that condition A does not depend on a
+    dump existing. A is the recording replayed against itself: it has nothing to
+    do with any policy, and needing a policy's dump to run it would be an
+    accidental coupling that hides when the baseline itself has drifted.
+    덤프가 아니라 여기서 읽는다. 그래야 조건 A 가 덤프의 존재에 의존하지 않는다.
+    A 는 기록을 자기 자신에 대해 재생하는 것이고 어떤 정책과도 무관하다. 그것을
+    돌리려고 정책의 덤프가 필요하다면, 기준선 자체가 밀렸을 때 그것을 가리는
+    우연한 결합이 된다.
+    """
+    meta_path = npz.with_suffix(".json")
+    if not meta_path.exists():
+        return None
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    xy = (meta.get("notes") or {}).get("object_init_xy")
+    return (float(xy[0]), float(xy[1])) if xy is not None else None
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("data", type=Path)
-    p.add_argument("dump", type=Path, help="tools/dump_residuals.py 의 출력 디렉터리")
     p.add_argument("ckpt", type=Path)
+    p.add_argument("--dump", type=Path, default=None,
+                   help="tools/dump_residuals.py 의 출력 디렉터리. "
+                        "B_* 조건에만 필요하다 — A 와 C 는 없어도 돈다")
     p.add_argument("--device", type=str, default="cpu",
                    help="덤프를 만든 장치와 같아야 한다 (L58)")
     p.add_argument("--only", type=str, default=None,
-                   help=f"조건 하나만 (A|B_all|B_arm|B_grip|C). 계측기 검증용")
+                   help="조건 하나만 (A|B_all|B_arm|B_grip|C). 계측기 검증용")
+    p.add_argument("--train-seed", type=int, default=None,
+                   help="이 ckpt 를 학습한 시드. 생략하면 파일명 _seed{N} 에서 "
+                        "추론한다. 홀드아웃 분리 보고에만 쓴다")
     p.add_argument("--jitter-c", action="store_true",
                    help="C 를 물체 고정이 아니라 지터로 돌린다. V0-5 검증 전용 — "
                         "이 결과는 A·B' 와 비교 불가다")
@@ -102,31 +133,66 @@ def main() -> int:
     cfg: dict[str, Any] = load_config()
     g = gripper_index()
     eps = sorted(args.data.glob("ep_*.npz"))
-    dumps = {d.stem: read_dump(d) for d in sorted(args.dump.glob("ep_*.npz"))}
     if not eps:
         print(f"에피소드가 없다: {args.data}")
-        return 1
-    missing = [e.stem for e in eps if e.stem not in dumps]
-    if missing:
-        print(f"덤프에 없는 에피소드 {len(missing)}편: {missing[:5]}")
-        print("덤프와 데이터셋이 어긋났다. 같은 데이터셋으로 다시 덤프해라")
-        return 1
-
-    no_xy = [e.stem for e in eps if dumps[e.stem].object_xy is None]
-    if no_xy:
-        print(f"⚠️ {len(no_xy)}편은 `notes.object_init_xy` 가 없어 물체를 고정할 수 "
-              "없다. **그 편의 재생은 무효다.** 전량 제외하고 돈다\n")
-    usable = [e for e in eps if dumps[e.stem].object_xy is not None]
-    n = len(usable)
-    if n == 0:
-        print("물체 위치를 가진 에피소드가 없다. 비교가 성립하지 않는다")
         return 1
 
     todo = [args.only] if args.only else [*CONDITIONS, "C"]
     for c in todo:
         if c not in (*CONDITIONS, "C"):
-            print(f"모르는 조건: {c}")
+            print(f"모르는 조건: {c} (가능한 값 {[*CONDITIONS, 'C']})")
             return 1
+    needs_dump = [c for c in todo if c.startswith("B_")]
+
+    dumps: dict[str, Any] = {}
+    if needs_dump:
+        if args.dump is None:
+            print(f"조건 {needs_dump} 은 덤프가 필요하다. --dump 를 줘라")
+            print("  python tools/dump_residuals.py <데이터셋> <ckpt> --device cpu --log")
+            return 1
+        dumps = {d.stem: read_dump(d) for d in sorted(args.dump.glob("ep_*.npz"))}
+        missing = [e.stem for e in eps if e.stem not in dumps]
+        if missing:
+            print(f"덤프에 없는 에피소드 {len(missing)}편: {missing[:5]}")
+            print("덤프와 데이터셋이 어긋났다. 같은 데이터셋으로 다시 덤프해라")
+            return 1
+
+    xy_of = {e.stem: object_xy(e) for e in eps}
+    no_xy = [s for s, v in xy_of.items() if v is None]
+    if no_xy:
+        print(f"⚠️ {len(no_xy)}편은 `notes.object_init_xy` 가 없어 물체를 고정할 수 "
+              "없다. **그 편의 재생은 무효다.** 전량 제외하고 돈다\n")
+    usable = [e for e in eps if xy_of[e.stem] is not None]
+    n = len(usable)
+    if n == 0:
+        print("물체 위치를 가진 에피소드가 없다. 비교가 성립하지 않는다")
+        return 1
+
+    # ---- 홀드아웃 분리 ------------------------------------------------------
+    # A policy scored only on the episodes it trained on reports memorisation
+    # mixed with generalisation, and the two cannot be separated afterwards.
+    # 학습에 쓴 편에서만 채점한 정책 수치는 암기와 일반화가 섞인 값이고,
+    # 사후에는 둘을 분리할 수 없다.
+    train_seed = (args.train_seed if args.train_seed is not None
+                  else seed_from_ckpt_name(args.ckpt.name))
+    val_fraction = float(BCPolicy(args.ckpt, device="cpu").meta["train_config"]
+                         ["train"]["val_fraction"])
+    ckpt_n_eps = int(BCPolicy(args.ckpt, device="cpu").meta.get("n_episodes", -1))
+    heldout: set[str] = set()
+    split_ok = False
+    if train_seed is None:
+        print("⚠️ ckpt 파일명에서 학습 시드를 못 읽었다. 홀드아웃 분리를 생략한다 "
+              "— 아래 수치는 학습편과 홀드아웃편이 섞인 값이다")
+    elif ckpt_n_eps != len(eps):
+        print(f"⚠️ ckpt 는 {ckpt_n_eps}편으로 학습됐다고 기록하는데 데이터셋에는 "
+              f"{len(eps)}편이 있다. 계약 위반으로 탈락한 편이 있으면 에피소드 "
+              "인덱스가 밀린다. **홀드아웃 분리를 생략한다**")
+    else:
+        ids = set(heldout_episode_ids(len(eps), val_fraction, train_seed))
+        heldout = {e.stem for i, e in enumerate(eps) if i in ids}
+        split_ok = True
+        print(f"학습 시드 {train_seed} (ckpt 파일명에서 추론 — 관례이지 기록이 "
+              f"아니다) · val_fraction {val_fraction} → 홀드아웃 {len(heldout)}편")
 
     ckpt_sha = file_digest(args.ckpt)
     # Only condition C looks at the observation, and `BCPolicy.act` raises if the
@@ -157,14 +223,19 @@ def main() -> int:
             hits: list[bool] = []
             rows: list[dict[str, Any]] = []
             for i, npz in enumerate(usable):
-                d = dumps[npz.stem]
-                xy = None if (cond == "C" and args.jitter_c) else d.object_xy
-                pol = bc if cond == "C" else ReplayPolicy(
-                    assemble(cond, d, g), source=f"{cond}:{npz.stem}")
+                xy = None if (cond == "C" and args.jitter_c) else xy_of[npz.stem]
+                if cond == "C":
+                    pol = bc
+                elif cond == "A":
+                    pol = ReplayPolicy.from_episode(npz)
+                else:
+                    pol = ReplayPolicy(assemble(cond, dumps[npz.stem], g),
+                                       source=f"{cond}:{npz.stem}")
                 r = rollout(env, pol, seed=SEED_BASE + i, object_xy=xy)
                 hits.append(bool(r.success))
                 rows.append({
                     "episode": npz.stem,
+                    "heldout": npz.stem in heldout,
                     "success": bool(r.success),
                     "lift_mm": round(r.lift_height_m * 1000, 2),
                     "contact_tick": r.first_contact_tick,
@@ -174,8 +245,20 @@ def main() -> int:
                 })
             results[cond] = hits
             detail[cond] = rows
-            print(f"{cond:<8} {_fmt(sum(hits), n)}")
+            line = f"{cond:<8} {_fmt(sum(hits), n)}"
+            if split_ok:
+                tr = [r["success"] for r in rows if not r["heldout"]]
+                ho = [r["success"] for r in rows if r["heldout"]]
+                line += (f"   학습 {_fmt(sum(tr), len(tr))}"
+                         f"   홀드아웃 {_fmt(sum(ho), len(ho))}")
+            print(line)
 
+    if split_ok:
+        print("\n⚠️ 홀드아웃 n 이 작아 구간이 넓다. 학습·홀드아웃 차이는 이 n 으로 "
+              "구분되지 않을 수 있다 — 겹치면 '차이 없음' 이 아니라 '구분 불가' 다")
+        print("⚠️ 홀드아웃 집합은 학습 시드가 정한다. 즉 seed0·1·2 는 서로 다른 "
+              "편을 홀드아웃한다. 시드 간 비교에는 초기화 분산과 분할 분산이 "
+              "섞여 있고 분리 불가다 (LIMITS 등재 대상)")
     print()
 
     # ---- 계측기 검증 --------------------------------------------------------
@@ -263,7 +346,10 @@ def main() -> int:
                 "n_episodes": n, "excluded_no_object_xy": len(no_xy),
                 "ckpt": args.ckpt.name, "ckpt_sha": ckpt_sha,
                 "device": args.device, "conditions": todo,
-                "gripper_index": g,
+                "gripper_index": g, "render": render,
+                "train_seed_inferred": train_seed, "val_fraction": val_fraction,
+                "heldout_split_reported": split_ok,
+                "heldout_episodes": sorted(heldout),
                 "lift_height_m": float(cfg["grasp"]["lift_height_m"]),
                 "jitter_c": bool(args.jitter_c),
                 "seed_base": SEED_BASE, "gate": ROLLOUT_GATE,
@@ -272,9 +358,20 @@ def main() -> int:
                 "prereg": "docs/PREREG_ABC_0908.md",
             },
             result={
+                # Per-checkpoint only. Rollouts that share a training run are not
+                # independent Bernoulli draws, so nothing here may be pooled
+                # across checkpoints into one interval.
+                # 체크포인트 단위로만 낸다. 같은 학습 실행을 공유하는 롤아웃은
+                # 독립 베르누이 시행이 아니므로, 여기 값을 체크포인트 간에 합쳐
+                # 하나의 구간으로 만들면 안 된다.
                 "success": {c: sum(v) for c, v in results.items()},
                 "wilson": {c: [round(x, 4) for x in wilson_ci(sum(v), n)]
                            for c, v in results.items()},
+                "success_heldout": {
+                    c: sum(r["success"] for r in detail[c] if r["heldout"])
+                    for c in results
+                } if split_ok else None,
+                "n_heldout": len(heldout) if split_ok else None,
                 "verdict": verdict,
                 "checks": checks,
                 "detail": detail,
