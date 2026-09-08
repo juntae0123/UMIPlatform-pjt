@@ -1,14 +1,25 @@
-"""Raw recordings to dataset format — NOT IMPLEMENTED. S15P21A103-31.
-raw → dataset 포맷 변환 — **구현 없음.** S15P21A103-31.
+"""Raw recordings to dataset format — S15P21A103-31.
+raw → dataset 포맷 변환 — S15P21A103-31.
 
-출력은 `contract/episode.py` 의 `Episode` 를 만족해야 한다. 검증기를 통과하지 못한
-에피소드는 저장하지 않는다 — 시뮬 쪽 대응물이 `data/collect.py` 와 `data/verify.py` 이고,
-거기서 검증기가 실제로 결함 1건을 저장 전에 걸러냈다.
+⚠️ **2026-09-08 정정.** 이 파일의 이전 내용은 "여기서 `contract.episode` 를 직접
+   임포트해 `Episode` 를 만들라"고 안내했다. **더 이상 맞지 않다.**
+
+변환기는 `AI/umi/` 로 옮겨졌다 (D-AI-30). 이슈 31 과 127 이 같은 코드를 써야 하고,
+raw 스키마는 양 트랙이 함께 읽어야 하는데 `track_a/` 안에 있으면 트랙 B 가
+"track_a 를 임포트하지 않는다" 규칙을 깨야 하기 때문이다.
+
+**그래서 여기서 만들 것은 `Episode` 가 아니라 `RawEpisode` 다.**
+
+    track_a/convert/arcore.py   ARCore 로그 → umi.raw.RawEpisode   ← 트랙 A 가 채운다
+    umi/convert.py              RawEpisode → contract.Episode      ← 완료
+    data/verify.py              계약 검증                          ← 완료
 
 임포트는 이렇게 한다 (`AI/` 에서 실행):
 
-    from contract.episode import Episode, EpisodeMeta, validate, write_episode
+    from umi.raw import RawEpisode, RawMeta, write_raw, FRAME_ROBOT_BASE
 
-⚠️ 계약의 미확정 항목 3건(정규화 규칙 / 타임스탬프 필드 / 범위 초과값 처리)이
-   S15P21A103-27 에 남아 있다. 확정 전에 대량 변환하면 전량 재작업 위험이 있다.
+`contract/` 를 직접 임포트할 필요가 없다. 계약을 만족시키는 일은 `umi/convert.py`
+가 이미 한다 — 합성 20편으로 계약 위반 0 을 확인했다 🟢.
+
+착수 조건과 결정 기록은 `track_a/HANDOVER_track_a.md` 를 읽어라.
 """
