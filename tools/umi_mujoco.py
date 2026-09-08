@@ -214,7 +214,7 @@ class MujocoIK:
         cfg: dict[str, Any],
         *,
         crosscheck: bool = True,
-        pos_tol_m: float = 1e-5,
+        pos_tol_m: float = 1e-7,
         axis_tol_deg: float = 0.05,
         match_roll: bool = True,
         multistart: bool = True,
@@ -237,6 +237,15 @@ class MujocoIK:
         ⚠️ `solve_pose_ik` 의 기본값을 바꾸지 않는다 — 그 함수는 시뮬·정책 대화
            소유이고 스크립트 수집이 그 기본값으로 검증돼 있다. 여기서 인자로만
            덮는다.
+
+        2026-09-08: 기본값을 1e-5 → **1e-7** 로 더 조였다. 관절 복원 정확도가
+        걸려 있다 — 계약 왕복에서 관절별 최대차가 움직임 대비 8.91% → 0.96% 로
+        떨어진다 (`MEASURE_umi_roundtrip_0907.md` M10). 비용은 1.23배(1.93s→2.37s),
+        미수렴 0/270 불변.
+
+        `axis_tol_deg` 는 0.05 를 유지한다. 100배 조여봤지만 수치가 **바이트 단위로
+        동일**했다 — `pos_tol=1e-7` 이면 축 오차가 이미 훨씬 아래라 그 조건이
+        구속하지 않는다. 아무것도 사지 못하는 제약은 걸지 않는다.
         """
         self.model = model
         self.cfg = cfg

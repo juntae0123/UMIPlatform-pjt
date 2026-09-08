@@ -78,6 +78,10 @@ def main() -> int:
     ap.add_argument("--clamp-gap", action="store_true",
                     help="실측 gap 곡선 밖의 간격을 양 끝으로 물린다. 기본은 스텝 폐기")
     ap.add_argument("--max-pos-error-mm", type=float, default=5.0)
+    ap.add_argument("--pos-tol-m", type=float, default=1e-5,
+                    help="솔버 정지 허용오차. 조이면 관절 복원 정확도가 오른다 "
+                         "(약하게 관측되는 shoulder_pan 이 여기 걸린다)")
+    ap.add_argument("--axis-tol-deg", type=float, default=0.05)
     ap.add_argument("--verify-image-index", action="store_true", default=True)
     ap.add_argument("--no-verify-image-index", dest="verify_image_index", action="store_false")
     ap.add_argument("--log", action="store_true", help="EXP_LOG.jsonl 에 한 줄 append")
@@ -96,7 +100,7 @@ def main() -> int:
 
     cfg = load_config(args.config)
     model = build_model(cfg, args.scene)
-    ik = MujocoIK(model, cfg)
+    ik = MujocoIK(model, cfg, pos_tol_m=args.pos_tol_m, axis_tol_deg=args.axis_tol_deg)
     policy = ConversionPolicy(
         max_pos_error_m=args.max_pos_error_mm / 1000.0, clamp_gap=args.clamp_gap
     )
