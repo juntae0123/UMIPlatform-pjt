@@ -57,7 +57,7 @@ from contract.episode import (
 )
 
 from umi.ik import IKSolution, IKSolver, ResidualSummary, summarize
-from umi.raw import RawEpisode, require_convertible
+from umi.raw import GRIPPER_STATUS_VALID, RawEpisode, require_convertible
 
 # Rejection reasons. Strings rather than an enum because they end up in a report
 # a human reads and in EXP_LOG as JSON.
@@ -66,6 +66,9 @@ REJECT_NOT_CONVERGED = "ik_not_converged"
 REJECT_LIMIT = "ik_joint_limit"
 REJECT_POS_ERROR = "ik_pos_error_over_budget"
 REJECT_GAP_OUT_OF_RANGE = "gripper_gap_outside_curve"
+REJECT_GRIPPER_MISSING = "gripper_gap_missing"
+"""SPEC 의 `status` 가 T(템플릿 보강) 또는 X(실패)인 프레임. `gap_m` 이 결측이다.
+채워 넣지 않고 폐기한다 — 0 으로 채우면 "완전히 닫혔다"가 되어 학습이 그것을 배운다."""
 
 
 class ConversionError(ValueError):
@@ -303,7 +306,13 @@ def convert(
     rejects: Counter[str] = Counter()
     q_prev: np.ndarray | None = None
 
+    status = np.asarray(raw.gripper_status).astype("<U1")
+
     for i in range(t_in):
+        if status[i] not in GRIPPER_STATUS_VALID:
+            rejects[REJECT_GRIPPER_MISSING] += 1
+            solutions.append(None)
+            continue
         try:
             grip_rad = invert_gap_curve(
                 float(raw.gripper_gap_m[i]), gap_curve, clamp=pol.clamp_gap

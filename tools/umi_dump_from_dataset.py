@@ -131,6 +131,8 @@ def main() -> int:
             eef_pos=eef_pos,
             eef_quat=eef_quat,
             gripper_gap_m=gaps,
+            # 시뮬 FK 이므로 전 프레임 D. 실기록의 T·X 결측은 여기서 발생하지 않는다.
+            gripper_status=np.full(ep.meta.n_steps, "D", dtype="<U1"),
             pose_timestamp=np.asarray(ep.state_timestamp, dtype=np.float64).copy(),
             images=images,
             image_timestamp=stamps,

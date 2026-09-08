@@ -192,11 +192,15 @@ def main() -> int:
                     "image_lag_ms": float(args.image_lag_ms),
                     "camera_codes": cam_code,
                     "index_encoded_in_pixels": True,
+                    "gripper_status_note": "합성 — 전 프레임 D",
                 },
             ),
             eef_pos=eef_pos,
             eef_quat=eef_quat,
             gripper_gap_m=gaps,
+            # 합성이므로 전 프레임 D(양쪽 직접검출). 실기록은 약 97% 만 D·M 이고
+            # T·X 는 gap 결측이다 (SPEC) — 변환기가 그 프레임을 폐기한다.
+            gripper_status=np.full(n, "D", dtype="<U1"),
             pose_timestamp=pose_ts,
             images=images,
             image_timestamp=stamps,

@@ -1,10 +1,22 @@
-"""The UMI raw recording schema — the form a demonstration arrives in, before IK.
-UMI raw 기록 스키마. 시연이 IK 이전에 도착하는 형식.
+"""The decoded, robot-frame intermediate between the app's raw bundle and the contract.
+앱의 raw 번들과 계약 사이에 있는 **디코딩·로봇좌표 중간 표현**.
 
-This is the canonical definition. Track A writes it (from ARCore + IMU logs),
-track B reads it (to build contract episodes). Nothing else may define it.
-이것이 정본이다. 트랙 A 가 (ARCore + IMU 로그에서) 쓰고, 트랙 B 가 (계약
-에피소드를 만들려고) 읽는다. 다른 곳에서 정의하지 않는다.
+## ⚠️ 여기는 "raw" 가 두 개라는 오해가 나기 쉬운 자리다 — 2026-09-08 정정
+
+보관용 raw 는 이 파일이 아니다. **`docs/SPEC_umi_raw_bundle.md` 의
+`schema: "umi_raw/0.1.0"` 번들**(ZIP: `episode.json` · `poses.csv` · `imu.csv` ·
+`frames.csv` · `gripper.csv` · `frames/*.jpg`)이 보관용이고, jpg 재인코딩이 금지된
+무손실 원본이다. 그게 바뀌면 양 트랙 합의 + D- 기록이 필요하다.
+
+이 파일은 그 번들을 **디코딩하고 로봇 베이스 좌표로 옮긴 중간 표현**이다.
+`track_a/convert/arcore.py` 가 번들 → 이것으로 만들고, `umi/convert.py` 가
+이것 → 계약으로 만든다.
+
+    umi_raw/0.1.0 번들   →   RawEpisode (이 파일)   →   contract.Episode
+    (보관용, SPEC 정본)      (중간, 로봇 좌표)          (학습용)
+
+처음 이 파일의 버전을 `"0.1.0-provisional"` 로 적었다. 번들 스키마와 이름도
+번호도 같아서 두 벌로 읽혔다. `umi_intermediate/…` 로 바꿨다.
 
 ## 세 가지 설계 결정과 그 이유
 
@@ -25,6 +37,30 @@ pose 와 RGB 가 별도 스트림이고 프레임 수가 같다는 보장이 없
 (LIMITS L30)이 손측정 근사값으로 조용히 통과하는 경로를 없애기 위한 것이다.
 **상수 편향은 학습이 지우지 못한다** — 실측상 ±10mm 에서 재생 성공률이 3/4 로
 떨어진다 🟢. 빈 칸은 그럴듯한 값으로 채우지 않고 실패로 만든다.
+
+## 번들에서 여기로 올 때 반드시 변환해야 하는 것 — 전부 조용히 틀리는 종류다
+
+| 번들 (SPEC) | 여기 | 안 바꾸면 |
+|---|---|---|
+| `quaternion_order: "xyzw"` | **`wxyz`** (MuJoCo 규약) | 180도급 회전 오류. 손실은 잘 떨어지고 실물에서만 실패 |
+| `pose_is: "T_world_camera"` | **파지점(pinch) pose** | `T_cam→tcp` 상수 편향. 학습이 지우지 못한다 |
+| `frame: "arcore_world"`, **Y = 중력반대** | `robot_base`, **Z-up** | 축 교환을 빠뜨리면 중력 방향이 틀린다 |
+| 원점 = 세션 시작 (에피소드마다 다름) | 로봇 베이스 고정 | 상대궤적만으로는 어디로 움직일지 알 수 없다 |
+
+⚠️ 마지막 두 줄의 변환(`T_ARCore월드→로봇베이스`)은 **아직 없다.**
+   SPEC 「막는 것」 절이 방안 A(작업대 ArUco 보드)를 권한다. 트랙 A 소관이다.
+
+## 그리퍼 개구 — 양 끝이 겹치지 않는다 🟢
+
+    UMI 리그 실측     0 ~ 90 mm      (SPEC, 핑거 50% 축소 · 마커 스케일)
+    SO-101 패드 간격  5.3 ~ 79.4 mm  (configs/so101.yaml grasp.gap_curve)
+
+겹치는 구간은 **5.3~79.4mm** 다. 그 밖의 프레임은 `umi.convert.invert_gap_curve`
+가 거부한다 — 사람이 로봇이 못 하는 것을 요구한 것이고, 반올림 오차가 아니라 발견이다.
+
+겹치는 구간에서는 **항등으로 쓴다.** `gap_m` 과 패드 간격은 둘 다 "물체 폭만큼
+벌린 정도"를 재고, 핑거 50% 축소는 핑거 **크기**를 바꾸지 기준 개구를 바꾸지 않는다.
+근거 없는 리타깃 함수를 끼우면 계통 오차를 만드는 쪽이 된다 🟡 — 트랙 A·HW 확인 대상.
 
 ## EEF 프레임 규약 — 부호를 틀리면 조용히 편향된다
 
@@ -54,7 +90,19 @@ from contract.ids import SKILL_IDS
 # the seam between tracks, the contract is. Raw may move faster.
 # raw 스키마가 바뀌면 올린다. CONTRACT_VERSION 과 독립이다 — 트랙 간 접점은 계약이고
 # raw 는 아니다. raw 는 더 빨리 움직여도 된다.
-RAW_VERSION = "0.1.0-provisional"
+RAW_VERSION = "umi_intermediate/0.2.0-provisional"
+"""이 중간 표현의 버전. 번들 스키마(`umi_raw/0.1.0`)와 **다른 것**이다.
+0.2.0 (2026-09-08): `gripper_status` 추가(SPEC 의 D/M/T/X), 번들 출처 필드 추가."""
+
+BUNDLE_SCHEMA_SUPPORTED = ("umi_raw/0.1.0",)
+"""`track_a/convert/arcore.py` 가 읽을 수 있는 번들 스키마. 다른 값이면 거부한다."""
+
+GRIPPER_STATUS_VALID = ("D", "M")
+"""`gap_m` 이 있는 상태값. D=양쪽 직접검출 · M=중심선 대칭 추정 (SPEC, 약 97%).
+T=템플릿 보강 · X=실패 는 `gap_m` 이 **결측**이다 — 채우지 않고 학습에서 제외한다."""
+
+UMI_GAP_RANGE_M = (0.0, 0.090)
+"""UMI 리그의 물리 개구 실측 (SPEC). SO-101 패드 간격은 0.0053~0.0794m 다."""
 
 FRAME_ROBOT_BASE = "robot_base"
 """The only frame the converter accepts. Everything else must be transformed first.
@@ -94,6 +142,15 @@ class RawMeta:
     # 카메라도 hand-eye 도 애초에 없는 합성 source 에만 허용한다.
     calibration_id: str = ""
     raw_version: str = RAW_VERSION
+    # 어느 번들에서 왔는가. `episode.json` 의 `schema` 를 그대로 옮긴다.
+    # 빈 값은 번들에서 오지 않았다는 뜻이다 (합성·시뮬 FK).
+    bundle_schema: str = ""
+    # SPEC `summary.txt` 에서 옮긴다. 로더가 이걸 무시하면 안 되는 구간을 학습한다.
+    #   frames_dropped: JPEG 인코딩 지연으로 이미지가 없는 pose 행 수
+    #   usable_segments: 추적 점프·PAUSED 를 뺀 사용 가능 구간 [[start, end), ...]
+    #                    ⚠️ 초기 3~5초는 ARCore 안정화 전이라 폐기 대상이다 (SPEC)
+    frames_dropped: int = 0
+    usable_segments: list[list[int]] = field(default_factory=list)
     device: str = ""
     recorded_by: str = ""
     notes: dict[str, Any] = field(default_factory=dict)
@@ -116,7 +173,8 @@ class RawEpisode:
     meta: RawMeta
     eef_pos: np.ndarray                      # (T, 3) float64, metres, `frame` 기준
     eef_quat: np.ndarray                     # (T, 4) float64, wxyz, 단위 사원수
-    gripper_gap_m: np.ndarray                # (T,) float64, 손가락 간격 [m]
+    gripper_gap_m: np.ndarray                # (T,) float64 [m]. 결측은 NaN
+    gripper_status: np.ndarray               # (T,) '<U1' — SPEC 의 D/M/T/X
     pose_timestamp: np.ndarray               # (T,) float64 seconds
     images: dict[str, np.ndarray]            # cam -> (Ti, H, W, 3) uint8
     image_timestamp: dict[str, np.ndarray]   # cam -> (Ti,) float64 seconds
@@ -154,8 +212,32 @@ def validate_raw(ep: RawEpisode) -> list[str]:
             problems.append(f"{label}.dtype must be {np.dtype(dtype)}, got {arr.dtype}")
         if arr.shape != shape:
             problems.append(f"{label}.shape must be {shape}, got {arr.shape}")
+        elif label == "gripper_gap_m":
+            pass  # 결측(NaN)은 아래에서 gripper_status 와 함께 검사한다
         elif not np.isfinite(arr).all():
             problems.append(f"{label} contains NaN or inf")
+
+    # gap 은 D·M 프레임에만 있다 (SPEC, 약 97%). T·X 는 결측이고 채우지 않는다 —
+    # 0 으로 채우면 "완전히 닫혔다"는 뜻이 되어 학습이 그것을 배운다.
+    if ep.gripper_status.shape != (t,):
+        problems.append(f"gripper_status.shape must be {(t,)}, got {ep.gripper_status.shape}")
+    elif ep.gripper_status.dtype.kind not in ("U", "S"):
+        problems.append(f"gripper_status.dtype must be a string kind, got {ep.gripper_status.dtype}")
+    elif ep.gripper_gap_m.shape == (t,):
+        status = np.asarray(ep.gripper_status).astype("<U1")
+        bad = sorted(set(status.tolist()) - set("DMTX"))
+        if bad:
+            problems.append(f"gripper_status 에 알 수 없는 값 {bad} — SPEC 은 D/M/T/X 다")
+        have = np.isin(status, list(GRIPPER_STATUS_VALID))
+        if not np.isfinite(ep.gripper_gap_m[have]).all():
+            problems.append(
+                "gripper_gap_m 이 D·M 프레임에서 결측이다 — 그 상태값은 gap 이 있다는 뜻이다"
+            )
+        if np.isfinite(ep.gripper_gap_m[~have]).any():
+            problems.append(
+                "gripper_gap_m 이 T·X 프레임에 값이 있다 — 채우지 않고 NaN 으로 둔다. "
+                "0 으로 채우면 '완전히 닫혔다'가 되어 학습이 그것을 배운다"
+            )
 
     if ep.eef_quat.shape == (t, 4) and np.isfinite(ep.eef_quat).all():
         norms = np.linalg.norm(ep.eef_quat, axis=1)
@@ -166,10 +248,10 @@ def validate_raw(ep: RawEpisode) -> list[str]:
                 "— 정규화되지 않은 사원수는 회전이 아니다"
             )
 
-    if ep.gripper_gap_m.shape == (t,) and np.isfinite(ep.gripper_gap_m).all():
-        if float(ep.gripper_gap_m.min()) < 0.0:
+    if ep.gripper_gap_m.shape == (t,) and np.isfinite(ep.gripper_gap_m).any():
+        if float(np.nanmin(ep.gripper_gap_m)) < 0.0:
             problems.append(
-                f"gripper_gap_m has a negative gap (min {float(ep.gripper_gap_m.min()):.4f}) "
+                f"gripper_gap_m has a negative gap (min {float(np.nanmin(ep.gripper_gap_m)):.4f}) "
                 "— 손가락 간격은 음수가 될 수 없다"
             )
 
@@ -225,6 +307,12 @@ def validate_raw(ep: RawEpisode) -> list[str]:
     if m.raw_version != RAW_VERSION:
         problems.append(f"raw_version {m.raw_version!r} != {RAW_VERSION!r}")
 
+    if m.source in REAL_SOURCES and m.bundle_schema not in BUNDLE_SCHEMA_SUPPORTED:
+        problems.append(
+            f"source {m.source!r} 인데 bundle_schema 가 {m.bundle_schema!r} 다. "
+            f"지원 {BUNDLE_SCHEMA_SUPPORTED} — 번들 스키마가 바뀌면 파서도 바뀌어야 한다"
+        )
+
     if m.pose_rate_hz <= 0:
         problems.append(f"pose_rate_hz must be positive, got {m.pose_rate_hz}")
 
@@ -275,6 +363,7 @@ def write_raw(ep: RawEpisode, out_dir: Path) -> Path:
         "eef_pos": ep.eef_pos,
         "eef_quat": ep.eef_quat,
         "gripper_gap_m": ep.gripper_gap_m,
+        "gripper_status": np.asarray(ep.gripper_status).astype("<U1"),
         "pose_timestamp": ep.pose_timestamp,
     }
     for cam, arr in ep.images.items():
@@ -310,6 +399,7 @@ def read_raw(npz_path: Path) -> RawEpisode:
             eef_pos=z["eef_pos"],
             eef_quat=z["eef_quat"],
             gripper_gap_m=z["gripper_gap_m"],
+            gripper_status=z["gripper_status"],
             pose_timestamp=z["pose_timestamp"],
             images=images,
             image_timestamp=stamps,

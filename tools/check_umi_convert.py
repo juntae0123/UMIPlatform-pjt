@@ -101,6 +101,7 @@ def make_raw(
     image_hw: tuple[int, int] = (IMAGE_SHAPE[1], IMAGE_SHAPE[2]),
     n_frames: int | None = None,
     image_lag_s: float = 0.004,
+    gripper_x_at: set[int] | None = None,
 ) -> RawEpisode:
     """A synthetic recording. Images deliberately have their own count and their own
     timestamps, offset from the pose stream — that is the case the schema exists for.
@@ -118,6 +119,11 @@ def make_raw(
         rot = np.array([[c, -sn, 0.0], [sn, c, 0.0], [0.0, 0.0, 1.0]])
         quats[i] = matrix_to_quat(rot)
     gap = np.linspace(0.045, 0.019, n)  # 4.5cm -> 1.9cm, 실측 곡선 안
+    status = np.full(n, "D", dtype="<U1")
+    if gripper_x_at:
+        for i in gripper_x_at:          # SPEC 의 X(검출 실패) — gap 은 결측이어야 한다
+            status[i] = "X"
+            gap[i] = np.nan
 
     nf = n_frames if n_frames is not None else n - 7
     ft = np.linspace(t[0] + image_lag_s, t[-1] + image_lag_s, nf).astype(np.float64)
@@ -140,6 +146,7 @@ def make_raw(
         eef_pos=pos,
         eef_quat=quats,
         gripper_gap_m=gap,
+        gripper_status=status,
         pose_timestamp=t,
         images=imgs,
         image_timestamp={cam: ft.copy() for cam in imgs},
@@ -249,6 +256,23 @@ def main() -> int:
     check("폐기 이유가 기록됨", rep2.rejects.get("ik_pos_error_over_budget") == 1, str(rep2.rejects))
     dt = np.diff(ep2.state_timestamp)
     check("제어 주기에 구멍 없음", float(np.abs(dt - 1.0 / RATE).max()) < 1e-9, f"최대편차 {np.abs(dt - 1/RATE).max():.2e}s")
+
+    print("== 8b. 그리퍼 결측 프레임은 폐기한다 (SPEC D/M/T/X) ==")
+    rawx = make_raw(n, gripper_x_at={5, 6})
+    check("결측이 있어도 raw 스키마 위반 0", validate_raw(rawx) == [], str(validate_raw(rawx)))
+    epx, repx = convert(rawx, StubIK(q_trajectory(n)), RANGES, GAP_CURVE, control_rate_hz=RATE)
+    check("계약 위반 0", validate(epx) == [], str(validate(epx)))
+    check("X 프레임이 폐기됨", repx.rejects.get("gripper_gap_missing") == 2, str(repx.rejects))
+    check("최장 구간을 골랐다", repx.n_steps_out == n - 7, f"{repx.n_steps_out} (span {repx.kept_span})")
+    bad_status = make_raw(n)
+    bad_status.gripper_status[3] = "Z"
+    check("알 수 없는 상태값은 거부", any("D/M/T/X" in m for m in validate_raw(bad_status)),
+          str(validate_raw(bad_status))[:80])
+    filled = make_raw(n, gripper_x_at={5})
+    filled.gripper_gap_m[5] = 0.0          # X 인데 0 으로 채운 경우
+    check("X 프레임을 0 으로 채우면 거부",
+          any("채우지 않고 NaN" in m for m in validate_raw(filled)),
+          str(validate_raw(filled))[:80])
 
     print("== 9. 거부해야 하는 것 ==")
     try:
