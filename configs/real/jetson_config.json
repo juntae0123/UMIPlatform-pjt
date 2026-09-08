@@ -1,0 +1,25 @@
+{
+  "port": "/dev/ttyTHS1",
+  "baudrate": 1000000,
+  "calibration_verified": false,
+  "speed_tick_s": 300,
+  "acceleration_register": 10,
+  "poll_s": 0.1,
+  "tick_per_turn": 4096,
+  "joints": {
+    "shoulder_pan": {"id": 1, "zero_tick": 1990, "direction": 1, "min_tick": 0, "max_tick": 4095},
+    "shoulder_lift": {"id": 2, "zero_tick": 2200, "direction": 1, "min_tick": 0, "max_tick": 4095},
+    "elbow_flex": {"id": 3, "zero_tick": 2048, "direction": 1, "min_tick": 0, "max_tick": 4095},
+    "wrist_flex": {"id": 4, "zero_tick": 2048, "direction": 1, "min_tick": 0, "max_tick": 4095},
+    "wrist_roll": {"id": 6, "zero_tick": 2126, "direction": 1, "min_tick": 0, "max_tick": 4095}
+  },
+  "gripper": {"id": 5, "closed_tick": 1720, "open_tick": 70, "min_tick": 70, "max_tick": 1720},
+  "notes": [
+    "Source: /home/a103/Workspace/test/test.py, read without executing on 2026-09-08.",
+    "User confirmed closed_tick=1720. open_tick=70 is inferred from the 70..1720 comment; physical gap unverified.",
+    "Shoulder lift 2200 is the active targets value; commented alternative is 2048. Zero-pose meaning requires confirmation.",
+    "direction=1 and 0..4095 are placeholders, NOT physical direction or calibrated limits. REAL execution blocked.",
+    "Current IDs: wrist_roll=6, gripper=5. Planned ID swap has NOT happened. Change config only after hardware swap.",
+    "Estimated SIM gap 0..90 mm; verify closed/open physical jaw spacing."
+  ]
+}
