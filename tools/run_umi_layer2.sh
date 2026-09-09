@@ -46,8 +46,32 @@ stage() {   # stage <이름> <명령...>
   echo "########## [$name] $((t1 - t0))초"
 }
 
+# 공유 머신 규약을 python 이 뜨기 전에 환경에 박는다.
+#
+# 왜 여기인가: `runtime_limits.py` 가 이 일을 하지만 **임포트하는 도구만** 보호된다.
+# 이 스크립트의 7단계 중 실제로 임포트하는 것은 train 하나뿐이다 🟢 (2026-09-09 확인:
+# collect_sim·umi_dump_from_dataset·convert_umi·verify_dataset·diff_datasets·
+# eval_rollout 은 임포트하지 않는다). 나머지 6단계는 BLAS 스레드를 코어 수(80)만큼
+# 띄우고 CUDA_VISIBLE_DEVICES 기본값(0 = 남의 장)으로 간다.
+# 환경변수는 프로세스 시작 전에 정해지므로 이 방식이 임포트보다 확실하고,
+# 남의 소유 파일을 고치지 않아도 된다. 값의 정본은 runtime_limits.py 다.
+export AI_THREADS="${AI_THREADS:-2}"
+for v in OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS \
+         NUMEXPR_NUM_THREADS VECLIB_MAXIMUM_THREADS; do
+  export "$v"="${AI_THREADS}"
+done
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ] && command -v nvidia-smi >/dev/null 2>&1; then
+  # 할당분 중 한가한 한 장. 정본은 runtime_limits.pick_gpu() 이므로 거기에 물어본다.
+  CUDA_VISIBLE_DEVICES="$(python -c 'import runtime_limits as r; print(r.pick_gpu())' \
+                          2>/dev/null || echo 2)"
+  export CUDA_VISIBLE_DEVICES
+fi
+
 echo "태그 $TAG · 수집 $N 편 · 스킬 $SKILL · pos_tol $POS_TOL"
 echo "MUJOCO_GL=${MUJOCO_GL:-미설정}  (서버 헤드리스는 egl 필요)"
+echo "스레드 ${AI_THREADS} · CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-미설정}"
 
 stage collect  python tools/collect_sim.py --episodes "$N" --jitter "$JITTER" \
                  --skill-id "$SKILL" --out "$SRC" --log
