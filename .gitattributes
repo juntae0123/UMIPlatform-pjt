@@ -7,6 +7,7 @@
 #
 # 여기서 eol=lf 로 못박으면 각자의 autocrlf 설정과 무관하게 동일해진다.
 *.py    text eol=lf
+*.sh    text eol=lf
 *.md    text eol=lf
 *.yaml  text eol=lf
 *.yml   text eol=lf

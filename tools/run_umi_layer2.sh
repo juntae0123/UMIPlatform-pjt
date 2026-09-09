@@ -56,7 +56,7 @@ stage convert  python tools/convert_umi.py --raw "$RAW" --out "$DST" \
                  --pos-tol-m "$POS_TOL" --log
 stage verify   python tools/verify_dataset.py "$DST" --write-index --log
 # 배열 대조가 층 2 의 판정기다. 롤아웃 성공률은 판정기가 아니다 —
-# baseline 4.3%(CI 2.5~7.3%)에 학습 실행 간 변동 25%p 라 0% 는 "변환이 깨졌다"와
+# baseline v5 9.3%(CI 6.5~13.2%)에 학습 실행 간 변동 25%p 라 0% 는 "변환이 깨졌다"와
 # "정책이 원래 나쁘다" 둘 다에서 나온다.
 stage diff     python tools/diff_datasets.py "$SRC" "$DST" || \
                  echo "  ⚠️ diff 가 비영 종료 — action 차이는 정상일 수 있다(ctrl vs q[t+1]). state 를 봐라"
@@ -83,4 +83,4 @@ echo ""
 echo "=== 읽는 법 ==="
 echo "  판정기는 [diff] 의 state 왕복 오차다. 롤아웃 성공률이 아니다."
 echo "  롤아웃 숫자는 '완주했다'의 증거이고, 성능으로 인용하지 않는다."
-echo "  현행 시뮬 BC baseline 은 4.3% (13/300, CI 2.5~7.3%) 다."
+echo "  현행 시뮬 BC baseline 은 v5 9.3% (CI 6.5~13.2%) 다. v3 4.3% 는 옛 조건이다."
