@@ -78,10 +78,12 @@ def main() -> int:
     ap.add_argument("--clamp-gap", action="store_true",
                     help="실측 gap 곡선 밖의 간격을 양 끝으로 물린다. 기본은 스텝 폐기")
     ap.add_argument("--max-pos-error-mm", type=float, default=5.0)
-    ap.add_argument("--pos-tol-m", type=float, default=1e-5,
-                    help="솔버 정지 허용오차. 조이면 관절 복원 정확도가 오른다 "
-                         "(약하게 관측되는 shoulder_pan 이 여기 걸린다)")
-    ap.add_argument("--axis-tol-deg", type=float, default=0.05)
+    # 기본값을 여기 적지 않는다. MujocoIK 가 정본이고, CLI 에 같은 기본값을 또 두면
+    # 바깥이 이긴다 — 실측 🟢 2026-09-08: MujocoIK 를 1e-7 로 고쳐놓고 이 CLI 기본값
+    # 1e-5 가 그것을 덮어 IK 위치 오차가 0.0001mm 대신 0.0082mm 로 나왔다.
+    ap.add_argument("--pos-tol-m", type=float, default=None,
+                    help="솔버 정지 허용오차. 생략하면 MujocoIK 기본값")
+    ap.add_argument("--axis-tol-deg", type=float, default=None)
     ap.add_argument("--verify-image-index", action="store_true", default=True)
     ap.add_argument("--no-verify-image-index", dest="verify_image_index", action="store_false")
     ap.add_argument("--log", action="store_true", help="EXP_LOG.jsonl 에 한 줄 append")
@@ -100,7 +102,12 @@ def main() -> int:
 
     cfg = load_config(args.config)
     model = build_model(cfg, args.scene)
-    ik = MujocoIK(model, cfg, pos_tol_m=args.pos_tol_m, axis_tol_deg=args.axis_tol_deg)
+    ik_kw = {}
+    if args.pos_tol_m is not None:
+        ik_kw["pos_tol_m"] = args.pos_tol_m
+    if args.axis_tol_deg is not None:
+        ik_kw["axis_tol_deg"] = args.axis_tol_deg
+    ik = MujocoIK(model, cfg, **ik_kw)
     policy = ConversionPolicy(
         max_pos_error_m=args.max_pos_error_mm / 1000.0, clamp_gap=args.clamp_gap
     )
@@ -117,6 +124,7 @@ def main() -> int:
     all_sols, reports, failures = [], [], {}
     rejects: Counter[str] = Counter()
     bad_idx_total = bad_cam_total = 0
+    n_index_checked = n_index_skipped = 0
     steps_in = steps_out = 0
     sync_max = 0.0
     ident_abs, ident_mse = [], []
@@ -140,11 +148,19 @@ def main() -> int:
         else:
             write_episode(ep, args.out)
 
+        # 픽셀에 프레임 번호가 심긴 입력에서만 유효하다. 진짜 렌더 이미지에는 그
+        # 비트가 없어 쓰레기를 읽는다 — 실측 🟢 2026-09-08: 141스텝 x 2카메라에서
+        # 280건이 "불일치" 로 잡혀 파이프라인이 끊겼다. 검사 실패가 아니라 적용
+        # 불가였다. **계측기가 자기 적용 가능성을 알아야 한다.** 플래그에 맡기지 않는다.
         bi = bc = 0
-        if args.verify_image_index:
+        encoded = bool(raw.meta.notes.get("index_encoded_in_pixels", False))
+        if args.verify_image_index and encoded:
             bi, bc = verify_image_index(ep, raw, rep.kept_span)
             bad_idx_total += bi
             bad_cam_total += bc
+            n_index_checked += 1
+        elif args.verify_image_index:
+            n_index_skipped += 1
 
         reports.append(rep)
         rejects.update(rep.rejects)
@@ -175,12 +191,22 @@ def main() -> int:
     print(f"pose↔이미지 동기 오차 최대 {sync_max:.2f}ms  "
           f"(계약의 state/action 10ms 게이트는 이 오차를 보지 못한다)")
     print(f"identity 기준선  mean|action-state| {np.mean(ident_abs):.5f} · "
-          f"MSE {np.mean(ident_mse):.3e}")
-    print("  ⚠️ 학습 손실은 이 MSE 보다 **뚜렷하게** 낮아야 의미가 있다")
-    if args.verify_image_index:
+          f"MSE {np.mean(ident_mse):.3e}  (계약 정규화 단위)")
+    # ⚠️ 2026-09-08 정정. 이전 문구는 "학습 손실이 이 MSE 보다 낮아야 한다" 였고
+    #    **단위가 달라 비교 대상이 아니다.** train_bc 는 joint_delta_gripper_abs
+    #    행동공간 + 타겟 표준화 단위로 학습하고, 자명한 예측기(항상 0) 손실을
+    #    스스로 찍는다 (실측 예: 0.72245). 판정은 그 값을 쓴다.
+    print("  이 값은 **데이터 속성**이다. 학습 손실과 직접 비교하지 마라 —")
+    print("  train_bc 가 표준화 단위로 자명한 예측기 손실을 따로 찍는다. 판정은 그걸 쓴다")
+    if n_index_checked:
         verdict = "통과" if bad_idx_total == 0 and bad_cam_total == 0 else "실패"
-        print(f"이미지 정렬 픽셀 대조 {verdict} "
+        print(f"이미지 정렬 픽셀 대조 {verdict} — {n_index_checked}편 "
               f"(프레임번호 불일치 {bad_idx_total} · 카메라코드 불일치 {bad_cam_total})")
+    if n_index_skipped:
+        print(f"이미지 정렬 픽셀 대조 **해당 없음** — {n_index_skipped}편 "
+              "(픽셀에 프레임 번호가 심기지 않은 입력. 진짜 렌더 이미지가 그렇다)")
+        print("  ⚠️ 이 입력에서는 프레임 정렬이 독립적으로 검증되지 않는다. "
+              "동기 오차 수치만 남는다")
     print(f"계약 위반 에피소드 {len(failures)}/{len(raws)}")
     for name, why in failures.items():
         print(f"  {name}: {why}")
@@ -194,6 +220,8 @@ def main() -> int:
             "roll_residual_median_deg": round(float(np.median(roll)), 5),
             "image_sync_offset_max_ms": round(sync_max, 3),
             "identity_mse": round(float(np.mean(ident_mse)), 8),
+            "image_index_verified_episodes": n_index_checked,
+            "image_index_not_applicable_episodes": n_index_skipped,
             "solver_pos_tol_m": ik.pos_tol_m,
             "match_roll": ik.match_roll,
         })
