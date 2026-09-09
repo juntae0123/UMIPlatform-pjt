@@ -24,6 +24,12 @@
 *.txt   text eol=lf
 *.jsonl text eol=lf
 
+# 실험 로그는 append-only 다. 양 트랙이 같은 파일 끝에 각자 줄을 붙이므로
+# 기본 3-way merge 는 매번 충돌을 낸다 — 내용이 겹치는 게 아니라 위치가
+# 겹칠 뿐인데도. union 드라이버는 양쪽 줄을 다 남긴다. 그게 맞는 해결이다.
+# (한쪽을 고르면 실험 기록이 사라진다. 계측 기록에 그것보다 나쁜 결과는 없다.)
+EXP_LOG.jsonl merge=union
+
 # 공식 MJCF·메시는 벤더링본이다. Git 이 내용을 건드리지 않게 한다.
 third_party/** -text
 *.stl   binary
