@@ -127,3 +127,10 @@
 > 그 CR 은 Windows 작업사본에만 있던 `core.autocrlf` 산물이다. 서버는 원래 LF 를
 > 받는다. **작업사본을 재고 저장소 결함이라고 단정했다** — 계측 대상을 틀린 것이다.
 > `*.sh text eol=lf` 는 다른 근거(설정 의존 제거)로 유지한다. LIMITS 항목은 아니다.
+
+## 2026-09-10 추가 (김준태·트랙B)
+
+| # | 미검증 항목 | 비고 |
+|---|---|---|
+| L71 | **`probe_gripper_schedule.py` 의 `verdict` 가 체크포인트 수에 따라 스케일하지 않는다** | `315-319` 행의 `count >= 2` 에서 `count` 는 조건을 통과한 **체크포인트 개수**인데 임계값이 상수 2다 🟢. 체크포인트 1개로 실행하면 최대값이 1이므로 결과와 무관하게 항상 `gripper_only_not_sufficient` 가 출력된다. 2026-09-10 v5 seed0 축소 실행에서 fixed67·75·85 가 사전등록 기준(>20% 이고 learned 대비 >=20%p)을 전부 통과했는데도 그 verdict 가 찍혔다. **1~2개 체크포인트로 돌린 실행의 `verdict` 필드는 무효다.** 조치안: 임계값을 `max(2, ceil(n_ckpt*2/3))` 같은 비율로 바꾸거나, `n_ckpt < 3` 이면 verdict 를 `None` 으로 낸다. 미착수 |
+| L72 | **oracle 조건의 폐쇄 판정이 고장 나 있다 — 특권정보 조건이 learned 보다 나쁘다** | DAgger seed0/1/2 에서 oracle 48/21/24 vs fixed60 81/49/38 🟢 (0909), v5 seed0 에서 oracle 3/100 vs learned 11/100 🟢 (0910). 물체 실좌표를 쓰는 조건이 아무것도 안 쓰는 조건보다 낮다. 원인 추정 🟡: `grasp.feedback.grasp_tol_m = 0.005` 가 늦게 만족되거나 아예 만족되지 않아 닫는 시점이 밀린다 — oracle 중앙 close tick 이 fixed 보다 뒤에 있다(70 / 92.5 / 81.5). **함의: 0909 사전등록 판정 2번("oracle 통과 + fixed 실패 → 시각 trigger 필요")은 애초에 검정 불가능했다.** 계측기가 고장이면 그 분기는 영원히 안 켜진다. tolerance 스윕(`PREREG_gripper_oracle_tolerance_0910.md`)을 3일 마감 때문에 폐기했으므로 **미해결.** oracle 수치를 어떤 판정에도 쓰지 않는다 |
