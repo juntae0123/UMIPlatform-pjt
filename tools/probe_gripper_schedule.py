@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import runtime_limits
 
-runtime_limits.claim("probe_gripper_schedule")
+_claim_name = "probe_gripper_schedule"
+if "--claim-name" in sys.argv:
+    _claim_index = sys.argv.index("--claim-name")
+    if _claim_index + 1 >= len(sys.argv):
+        raise ValueError("--claim-name requires a value")
+    _claim_name = sys.argv[_claim_index + 1]
+runtime_limits.claim(_claim_name)
 runtime_limits.torch_threads()
 
 import numpy as np
@@ -29,6 +36,8 @@ CONDITIONS = (
 )
 
 
+ORACLE_TOLERANCE_OVERRIDE: float | None = None
+
 class GripperOverride:
     def __init__(
         self,
@@ -47,8 +56,13 @@ class GripperOverride:
         g = cfg["grasp"]
         self.offset = np.asarray(g["pinch_offset_local"], dtype=float)
         self.grasp_z = float(g["grasp_z_offset_m"])
-        self.tolerance = float(
+        default_tolerance = float(
             g.get("feedback", {}).get("grasp_tol_m", 0.005)
+        )
+        self.tolerance = (
+            float(ORACLE_TOLERANCE_OVERRIDE)
+            if ORACLE_TOLERANCE_OVERRIDE is not None
+            else default_tolerance
         )
 
         middle = np.asarray(
@@ -168,21 +182,31 @@ def run_condition(
 
 
 def main() -> int:
+    global ORACLE_TOLERANCE_OVERRIDE
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--policy-ckpt", type=Path, action="append", required=True
     )
     parser.add_argument(
-        "--expected", type=int, action="append", required=True
+        "--expected", type=int, action="append", default=[]
     )
+    parser.add_argument("--no-expected", action="store_true")
+    parser.add_argument(
+        "--claim-name", type=str, default="probe_gripper_schedule"
+    )
+    parser.add_argument("--oracle-only", action="store_true")
+    parser.add_argument("--oracle-tolerance", type=float, default=None)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed-base", type=int, default=3000)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--log", action="store_true")
     args = parser.parse_args()
+    ORACLE_TOLERANCE_OVERRIDE = args.oracle_tolerance
 
-    if len(args.policy_ckpt) != len(args.expected):
+    if not args.no_expected and len(args.policy_ckpt) != len(args.expected):
         raise ValueError("checkpoint and expected counts differ")
+    if args.no_expected:
+        args.expected = [-1] * len(args.policy_ckpt)
     if args.out.exists():
         raise FileExistsError(args.out)
     args.out.mkdir(parents=True)
@@ -197,13 +221,69 @@ def main() -> int:
             checkpoint, "learned", args.episodes, args.seed_base
         )
         all_results[key]["learned"] = result
-        if result["success"] != expected:
+        if not args.no_expected and result["success"] != expected:
             raise RuntimeError(
                 f"instrument invalid: {key} learned "
                 f"{result['success']}/{args.episodes}, "
                 f"expected {expected}/{args.episodes}"
             )
         print(f"{key} reproduction fixture: PASS")
+
+    if args.oracle_only:
+        for checkpoint in args.policy_ckpt:
+            key = checkpoint.stem
+            all_results[key]["oracle"] = run_condition(
+                checkpoint,
+                "oracle",
+                args.episodes,
+                args.seed_base,
+            )
+
+        payload = {
+            "episodes_per_condition": args.episodes,
+            "seed_base": args.seed_base,
+            "render": True,
+            "policy_device": "cpu",
+            "jitter_m": 0.05,
+            "oracle_tolerance_m": args.oracle_tolerance,
+            "results": all_results,
+        }
+        result_path = args.out / "result.json"
+        result_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        print("\ncheckpoint learned oracle never_closed median_close_tick")
+        for checkpoint in args.policy_ckpt:
+            key = checkpoint.stem
+            learned = all_results[key]["learned"]
+            oracle = all_results[key]["oracle"]
+            print(
+                f"{key} "
+                f"{learned['success']}/{learned['episodes']} "
+                f"{oracle['success']}/{oracle['episodes']} "
+                f"{oracle['never_closed']} "
+                f"{oracle['median_close_tick']}"
+            )
+
+        if args.log:
+            log_run(
+                experiment="gripper_oracle_tolerance",
+                author="김준태(트랙B)",
+                issue="S15P21A103-34",
+                conditions={
+                    "checkpoints": [str(p) for p in args.policy_ckpt],
+                    "episodes": args.episodes,
+                    "seed_base": args.seed_base,
+                    "render": True,
+                    "policy_device": "cpu",
+                    "jitter_m": 0.05,
+                    "oracle_tolerance_m": args.oracle_tolerance,
+                },
+                result=payload,
+            )
+        return 0
 
     for checkpoint in args.policy_ckpt:
         key = checkpoint.stem
