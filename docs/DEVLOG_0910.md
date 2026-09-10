@@ -23,11 +23,18 @@
 | 사전등록 addendum — 그리퍼 실험에 DAgger 데이터 조건 추가 | `..._addendum.md` |
 | LIMITS L71(verdict 임계값 결함)·L72(oracle 고장) 등재 | `LIMITS.md` |
 | 포트폴리오 19건 동기화 — 해시 전부 일치 | 폴더 연결 후 |
+| 큐 러너 + `--action-space` + `AI_CLAIM_NAME` | `4bb978e` |
+| `joint_delta_gripper_binary` 구현 + fixture 15/15 통과 | `a95061c` |
+| 도구가 호출자 `PYTHONPATH` 에 의존하지 않게 수정 | `64a4a27` |
+| **UMI raw 번들 1편 수령 검사 — 시연 아님, 학습 불가 판정** | `MEASURE_umi_bundle_intake_0910.md` |
 | 프로젝트 문서 `claude/규칙_정정_Git_MR.md` 에 오늘 사고 4건 추가 | 프로젝트 |
 
 ### ⏳ 도는 중
 
-- (없음)
+- **큐 소진** — `gripper_binary_v5` + `gripper_binary_dagger`, `--parallel 2`.
+  진행은 `out/queue_20260910_162850/*.log` (콘솔에는 완료 시에만 찍힌다)
+  첫 관문 통과 🟢: 닫힘 라벨 28.6% · pos_weight 2.493 · 그리퍼 채널 표준화 std 1.0 ·
+  자명한 예측기(항상 열어둠) 3.62 대비 epoch3 val 0.699
 
 ### ⬜ 안 한 것 / 대기
 
@@ -48,6 +55,11 @@
 - ~~포트폴리오 폴더 미연결~~ → 해소 (2026-09-10 연결, 19건 동기화)
 - **oracle 계측기 고장** — v5 에서도 재현(3/100 < learned 11/100). E2 폐기로 미해결 → **L72 등재**
 - `probe_gripper_schedule.py` verdict 가 체크포인트 1~2개 실행에서 무의미 → **L71 등재**
+- **UMI 실데이터에 `gripper.csv`(gap_m) 가 없다** — 개폐 라벨을 만들 수 없다. MW·트랙 A 요청 대기
+- **`summary.txt` 의 `usable_segments` 정의가 SPEC 과 충돌** (안정화 폐기 구간 미반영). 트랙 A 확인 필요
+- **큐가 도는 동안 소스가 바뀌면 같은 실험 안에서 코드가 갈린다** — `repeat_runs` 가
+  seed 마다 `train_bc.py` 를 새 프로세스로 띄우기 때문. `run_queue` 는 시작 시 1회만
+  dirty 검사한다. HEAD 고정 가드 필요 (큐 완료 후 착수)
 
 ---
 
@@ -102,6 +114,13 @@ heredoc 종료자가 본문 끝에 붙어 스크립트 전체가 마크다운으
 **E1 결과 — 예측 적중 🟢.** "v5 fixed 최고 30~50%" 예측에 실측 37%.
 0909 의 미해결 질문("fixed 성공이 DAgger 덕분인가 그리퍼 덕분인가")에 답이 나왔다:
 **둘 다이고 팔 쪽 몫이 더 크다.**
+
+**UMI raw 번들 1편 수령** — 사용자가 `rec_20260910_172751.zip` 을 올렸다.
+계약 대조 결과 `MEASURE_umi_bundle_intake_0910.md`. 카메라 설정(OIS/EIS off, AE/AWB
+lock)·시계(IMU skew 7.34ms)·pose↔frame 1:1(141/141)·30.22Hz 는 전부 SPEC 만족 🟢.
+그러나 **프레임 육안 확인 결과 시연이 아니다** — 손에 든 폰으로 사무실을 훑은 영상이고
+그리퍼·마커·물체가 없다. 게다가 `gripper.csv` 가 없어 개폐 라벨을 만들 수 없고,
+길이 4.67초는 SPEC 의 "초기 3~5초 폐기" 와 충돌한다. **학습 투입 불가.**
 
 **시뮬 자동화 파이프라인 논의** — 사용자 제안. 결론: 실행은 자동화, **판단은 자동화하지
 않는다.** n=100 에서 ±9%p 흔들리는데 기계가 조합을 훑고 최고를 고르면 다중비교 과적합이다.
