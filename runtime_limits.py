@@ -260,6 +260,10 @@ def claim(name: str, stale_ok: bool = False) -> None:
     중복 실행은 느린 것보다 나쁘다. `probe_freeze` 사본 4개가 한 로그로 리다이렉트돼
     읽을 수 없는 파일이 됐고, 낭비된 부하는 머신을 쓰는 모두에게 청구된다.
     """
+    # 큐 러너가 같은 도구를 조건별로 병렬 기동할 수 있게 락 이름을 덮어쓴다.
+    # 옵트인이다 — 환경변수가 없으면 기존 동작과 완전히 동일하다.
+    # ⚠️ 공유 코드다 (트랙 A 영향). 기본 동작 불변이므로 기존 실행에는 변화가 없다.
+    name = os.environ.get("AI_CLAIM_NAME", name)
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock = LOCK_DIR / f".lock_{name}"
     if lock.exists():

@@ -139,6 +139,8 @@ def run_conditions(args: Any, train_seeds: list[int] | None = None) -> dict[str,
         "code_sha_at_launch": CODE_SHA_AT_LAUNCH,
         # 추론 장치. v2~v6 은 전부 cpu 였고 기록에 없었다 (eval/rollout.py 주석 참조).
         "policy_device": getattr(args, "policy_device", "cpu"),
+        # 행동공간 덮어쓰기. train_config_sha 는 파일 해시라 이걸 반영하지 못한다.
+        "action_space_override": getattr(args, "action_space", None),
         "train_config_sha": file_digest(DEFAULT_TRAIN_CONFIG),
         "gate": {"rollout": ROLLOUT_GATE, "min_runs": GATE_MIN_RUNS},
     }
@@ -161,6 +163,7 @@ def repeat(
     tag: str = "",
     image_noise: float | None = None,
     policy_device: str = "cpu",
+    action_space: str | None = None,
 ) -> list[RunResult]:
     """Train `runs` times, score each, and collect the results.
     `runs` 회 학습하고 각각 채점해 결과를 모은다."""
@@ -181,6 +184,8 @@ def repeat(
             train_cmd += ["--epochs", str(epochs)]
         if image_noise is not None:
             train_cmd += ["--image-noise", str(image_noise)]
+        if action_space is not None:
+            train_cmd += ["--action-space", action_space]
         _run(train_cmd)
         # `--policy-device` 를 자식에게 넘긴다. 안 넘기면 repeat_runs 의 conditions 에는
         # 기록되는데 실제 평가는 eval_rollout 기본값으로 돌아 **기록과 실행이 갈린다.**
@@ -279,6 +284,10 @@ def main() -> int:
     parser.add_argument("--policy-device", type=str, default="cpu",
                         help="평가 시 정책 추론 장치. 기본 cpu 로 v2~v6 비교선 유지")
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
+    parser.add_argument(
+        "--action-space", type=str, default=None,
+        help="model.action_space 를 덮어쓴다 (자식 train_bc 로 전달)",
+    )
     parser.add_argument("--log", action="store_true")
     args = parser.parse_args()
 
@@ -318,6 +327,7 @@ def main() -> int:
         tag=args.tag,
         image_noise=args.image_noise,
         policy_device=args.policy_device,
+        action_space=args.action_space,
     )
     summary = summarise(results)
 

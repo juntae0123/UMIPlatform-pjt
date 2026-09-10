@@ -212,10 +212,20 @@ def main() -> int:
                         help="설정값을 덮어쓴다. 학습 3회 반복 시 서로 다른 값을 준다")
     parser.add_argument("--out", type=Path, default=None, help="체크포인트 경로")
     parser.add_argument("--author", type=str, default="김준태(트랙B)")
+    parser.add_argument(
+        "--action-space", type=str, default=None,
+        help="configs/train/bc.yaml 의 model.action_space 를 덮어쓴다. "
+             "설정 파일을 고치지 않고 조건을 바꾸기 위한 것이며 "
+             "EXP_LOG conditions.action_space 에 실제 사용값이 기록된다. "
+             "⚠️ train_config_sha 는 파일 해시라 이 덮어쓰기를 반영하지 않는다",
+    )
     parser.add_argument("--log", action="store_true")
     args = parser.parse_args()
 
     cfg: dict[str, Any] = load_train_config()
+    if args.action_space is not None:
+        cfg["model"]["action_space"] = args.action_space
+        print(f"· 행동공간 덮어쓰기: {args.action_space} (설정 파일은 건드리지 않았다)")
     t = cfg["train"]
     epochs = int(args.epochs if args.epochs is not None else t["epochs"])
     batch_size = int(args.batch_size if args.batch_size is not None else t["batch_size"])
