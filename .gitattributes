@@ -23,6 +23,13 @@
 *.xml   text eol=lf
 *.txt   text eol=lf
 *.jsonl text eol=lf
+#
+# .gitattributes 자신도 규칙을 받아야 한다. 여기에 자기 자신에 대한 줄이
+# 없으면 core.autocrlf=true 인 Windows 작업사본에서 이 파일만 영구히
+# "수정됨" 으로 남는다. 2026-09-10 에 실제로 그 상태였다 —
+# 작업본 CR 36줄 / HEAD 블롭 CR 0줄 🟢. 줄바꿈 노이즈를 막으려고 만든
+# 파일이 정작 자기 자신은 못 막고 있었다.
+.gitattributes text eol=lf
 
 # 실험 로그는 append-only 다. 양 트랙이 같은 파일 끝에 각자 줄을 붙이므로
 # 기본 3-way merge 는 매번 충돌을 낸다 — 내용이 겹치는 게 아니라 위치가
