@@ -1,0 +1,13 @@
+# B-v5 — 그리퍼 이진 헤드, v5 데이터. fixed 상한 37% (MEASURE_gripper_schedule_e1_v5_0910)
+name: gripper_binary_v5
+prereg: docs/PREREG_gripper_binary_head_0910.md
+kind: repeat_runs
+data: datasets/sim_pick_v5
+action_space: joint_delta_gripper_binary
+runs: 3
+epochs: 30
+episodes: 100
+seed_base: 0
+eval_seed_base: 3000
+device: cuda
+policy_device: cpu

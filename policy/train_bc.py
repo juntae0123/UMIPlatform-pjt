@@ -41,6 +41,7 @@ from policy.bc import (
     CheckpointMeta,
     load_train_config,
     save_checkpoint,
+    gripper_index,
     target_scale,
     training_target,
 )
@@ -49,14 +50,91 @@ from tracking.exp_log import code_digest, file_digest, log_run
 DEFAULT_CAMERAS = ["cam_front", "cam_wrist"]
 
 
-def make_loss(name: str) -> nn.Module:
-    """L1 or MSE. Recorded in the checkpoint so a number can be attributed.
-    L1 또는 MSE. 수치를 귀속시킬 수 있도록 체크포인트에 기록한다."""
+GRIPPER_LOSS_WEIGHT = 1.0
+"""Weight on the gripper BCE term relative to the arm regression term.
+팔 회귀항 대비 그리퍼 BCE 항의 가중치.
+
+Fixed at 1.0 **before** the experiment ran and not tuned. Choosing it from the
+results would be picking a knob to make a number look better, which is what
+`PREREG_gripper_binary_head_0910.md` exists to prevent.
+실험 착수 **전에** 1.0 으로 고정했고 튜닝하지 않는다. 결과를 보고 고르면 수치가
+좋아 보이게 손잡이를 맞추는 것이고, 그것을 막기 위해
+`PREREG_gripper_binary_head_0910.md` 가 있다."""
+
+
+class ArmL1GripperBCE(nn.Module):
+    """Regression loss on the arm channels, BCE on the gripper channel.
+    팔 채널은 회귀 손실, 그리퍼 채널은 BCE.
+
+    The arm term is left exactly as it was so only one thing changes at a time:
+    if both the arm loss and the gripper loss moved, a difference in the rollout
+    rate could not be attributed to either.
+    팔 항은 기존과 정확히 같게 둔다. 한 번에 하나만 바꿔야 하기 때문이다 — 팔 손실과
+    그리퍼 손실이 동시에 바뀌면 롤아웃 성공률 차이를 어느 쪽에도 귀속시킬 수 없다.
+
+    `pos_weight` compensates the class imbalance: the gripper is open on roughly
+    110 of 141 steps, so without it the majority class dominates the gradient in
+    the same way the L1 median did.
+    `pos_weight` 는 클래스 불균형을 보정한다. 그리퍼는 141스텝 중 약 110이 열림이라,
+    없으면 L1 중앙값이 그랬던 것과 같은 방식으로 다수 클래스가 기울기를 지배한다.
+
+    ⚠️ 손실 값은 기존 공간의 손실과 **비교할 수 없다.** 항이 두 개고 단위가 다르다.
+       비교는 언제나 롤아웃 성공률로 한다.
+    """
+
+    def __init__(
+        self,
+        base: nn.Module,
+        gripper: int,
+        pos_weight: float,
+        weight: float = GRIPPER_LOSS_WEIGHT,
+    ) -> None:
+        super().__init__()
+        self.base = base
+        self.gripper = int(gripper)
+        self.pos_weight = float(pos_weight)
+        self.weight = float(weight)
+
+    def forward(
+        self, pred: torch.Tensor, target: torch.Tensor
+    ) -> torch.Tensor:
+        arm = [i for i in range(pred.shape[-1]) if i != self.gripper]
+        arm_loss = self.base(pred[..., arm], target[..., arm])
+        grip_loss = nn.functional.binary_cross_entropy_with_logits(
+            pred[..., self.gripper],
+            target[..., self.gripper],
+            # 텐서를 forward 에서 만든다. 버퍼로 두면 criterion 을 .to(device) 하지
+            # 않는 현재 호출 경로에서 장치가 갈린다.
+            pos_weight=target.new_tensor(self.pos_weight),
+        )
+        return arm_loss + self.weight * grip_loss
+
+
+def make_loss(
+    name: str,
+    action_space: str | None = None,
+    gripper_pos_weight: float | None = None,
+) -> nn.Module:
+    """L1 or MSE, wrapped in a gripper BCE term for the binary action space.
+    L1 또는 MSE. 이진 행동공간이면 그리퍼 BCE 항으로 감싼다.
+
+    Recorded in the checkpoint so a number can be attributed.
+    수치를 귀속시킬 수 있도록 체크포인트에 기록한다."""
     if name == "l1":
-        return nn.L1Loss()
-    if name == "mse":
-        return nn.MSELoss()
-    raise ValueError(f"loss 는 l1|mse 여야 한다: {name}")
+        base: nn.Module = nn.L1Loss()
+    elif name == "mse":
+        base = nn.MSELoss()
+    else:
+        raise ValueError(f"loss 는 l1|mse 여야 한다: {name}")
+
+    if action_space != "joint_delta_gripper_binary":
+        return base
+    if gripper_pos_weight is None:
+        raise ValueError(
+            "joint_delta_gripper_binary 는 gripper_pos_weight 가 필요하다. "
+            "데이터셋의 열림/닫힘 비율에서 계산하며 손으로 정하지 않는다"
+        )
+    return ArmL1GripperBCE(base, gripper_index(), gripper_pos_weight)
 
 
 def split_indices(n: int, val_fraction: float, seed: int) -> tuple[list[int], list[int]]:
@@ -290,6 +368,8 @@ def main() -> int:
     # 숫자 여섯 개를 읽으려고 이미지 13,818장을 디코딩한다.
     t_mean = t_std = None
     baseline_norm = float("nan")
+    grip_pos_weight: float | None = None
+    trivial_label = "항상 0"
     # Defined before the branch so the random-tensor path cannot reach the epoch
     # loop without one. An undefined transform there would be a NameError at the
     # first epoch, i.e. a crash instead of a silent unit mismatch -- but the point
@@ -308,7 +388,7 @@ def main() -> int:
         space = str(cfg["model"].get("action_space", "joint_absolute"))
         raw_target = training_target(acts, sts, space)
         if bool(t.get("normalize_target", True)):
-            t_mean, t_std = target_scale(raw_target)
+            t_mean, t_std = target_scale(raw_target, space)
         # Built here and used by BOTH passes. The baseline below is computed
         # through the same object, so the epoch losses and the reference they are
         # read against cannot end up in different units.
@@ -335,6 +415,28 @@ def main() -> int:
         # 항상 0 을 내는 신경망의 점수. epoch 손실과 같은 단위다. 이 기준 없이는 손실을
         # 읽을 수 없다 — 0.0057 이 괜찮아 보였는데 0 출력이 0.0075 였다.
         baseline_norm = float(scaled.abs().mean())
+        if space == "joint_delta_gripper_binary":
+            g = gripper_index()
+            closed = float(raw_target[:, g].sum())
+            opened = float(raw_target.shape[0]) - closed
+            if closed < 1.0:
+                raise ValueError(
+                    "이진 라벨에 닫힘 프레임이 없다. "
+                    "grasp.close_cmd/open_cmd 와 데이터의 그리퍼 명령을 대조하라"
+                )
+            # 데이터에서 파생되는 통계다. 손으로 고르는 하이퍼파라미터가 아니다.
+            grip_pos_weight = opened / closed
+            print(f"그리퍼 이진 라벨: 닫힘 {closed:.0f} / 열림 {opened:.0f} "
+                  f"({closed / raw_target.shape[0]:.1%}) · "
+                  f"pos_weight {grip_pos_weight:.3f} (데이터에서 계산)")
+            # 자명한 예측기를 "항상 0" 이 아니라 **항상 열어둠** 으로 바꾼다.
+            # 이 공간에서 이기고 싶은 상대가 그것이다 — v5 는 100편 중 42편에서
+            # 그리퍼를 한 번도 닫지 않았다 🟢 2026-09-10.
+            ref = make_loss(str(t["loss"]), space, grip_pos_weight)
+            trivial = torch.zeros_like(scaled)
+            trivial[:, g] = -4.0
+            baseline_norm = float(ref(trivial, scaled))
+            trivial_label = "항상 열어둠"
 
     model = BCNet(cameras, cfg).to(device)
     target_fn = target_fn.to(device)
@@ -370,13 +472,15 @@ def main() -> int:
     unit = "표준화 단위" if target_fn.standardised else "raw 델타 단위"
     print(f"손실 단위: {unit} — train·val·아래 baseline 이 모두 이 단위다")
     if baseline_norm == baseline_norm:  # not NaN
-        print(f"⚠️ 자명한 예측기(항상 0) 손실 = {baseline_norm:.5f}")
+        print(f"⚠️ 자명한 예측기({trivial_label}) 손실 = {baseline_norm:.5f}")
         print("   epoch 손실이 이 값 근처에서 멈추면 학습이 안 되고 있는 것이다."
               " 손실이 내려간 것만으로 판단하지 마라")
     print(f"파라미터 {n_params:,}개 (~{n_params * 4 / 1024 / 1024:.1f}MB fp32)")
     print("⚠️ Jetson 8GB 에 VLM 과 함께 올라가야 한다 — 이슈 42 미검증\n")
 
-    criterion = make_loss(str(t["loss"]))
+    criterion = make_loss(
+        str(t["loss"]), target_fn.action_space, grip_pos_weight
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(t["lr"]),
                                   weight_decay=float(t["weight_decay"]))
 
@@ -457,6 +561,13 @@ def main() -> int:
                 "action_space": model.action_space,
                 "normalize_target": t_std is not None,
                 "trivial_baseline_loss": baseline_norm, "n_params": n_params,
+                "trivial_baseline_kind": trivial_label,
+                "gripper_pos_weight": grip_pos_weight,
+                "gripper_loss_weight": (
+                    GRIPPER_LOSS_WEIGHT
+                    if model.action_space == "joint_delta_gripper_binary"
+                    else None
+                ),
                 "config_sha": file_digest(DEFAULT_CONFIG),
                 "metric_note": "손실은 학습이 망가졌는지 확인용. 판정은 롤아웃 성공률(게이트 20.0%)",
             },

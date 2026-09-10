@@ -1,0 +1,13 @@
+# B-dagger — 그리퍼 이진 헤드, DAgger 병합 데이터. fixed 상한 86/49/44%
+name: gripper_binary_dagger
+prereg: docs/PREREG_gripper_binary_head_0910_addendum.md
+kind: repeat_runs
+data: out/dagger_merged_20260910_092947
+action_space: joint_delta_gripper_binary
+runs: 3
+epochs: 30
+episodes: 100
+seed_base: 0
+eval_seed_base: 3000
+device: cuda
+policy_device: cpu
