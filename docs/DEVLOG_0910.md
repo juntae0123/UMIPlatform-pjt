@@ -122,3 +122,6 @@ heredoc 종료자가 본문 끝에 붙어 스크립트 전체가 마크다운으
 | 7 | "팔은 배웠다"(DAgger 근거)를 v5 에 전용 | A 의 최근접 14.3mm | 철회 |
 | 8 | E1 폐기 결정 | A 결과 | 되돌려 축소판으로 재개 |
 | 9 | **DEVLOG·TS 를 하루 종일 안 씀** | 사용자 지적 | 이 파일. 매 턴 상태 보드 갱신 |
+| 10 | 사전등록에 손실을 **MSE** 로 적음 | `configs/train/bc.yaml` 이 `loss: l1` | 정정. 메커니즘이 조건부 평균 → **중앙값** 으로 달라진다 |
+| 11 | **`PYTHONPATH` 누락 3회** (#3 과 같은 계열) | 큐가 `No module named 'policy'` 로 안 돎 | 규칙 추가가 아니라 **구조로 막았다** — `run_queue.py`·`probe_gripper_schedule.py` 에 `sys.path.insert` 추가. 저장소의 다른 `tools/` 는 전부 하고 있었다 |
+| 12 | `push_both.sh` 를 안내에서 또 빠뜨림 | 사용자 지적 | 명령 블록에 항상 포함 |

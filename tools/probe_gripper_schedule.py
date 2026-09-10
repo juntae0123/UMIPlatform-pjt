@@ -5,7 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-import runtime_limits
+# 이 저장소의 tools/ 관례다 (repeat_runs·findings·check_determinism 전부 한다).
+# 이 파일만 빠져 있어서 `PYTHONPATH` 없이 부르면 ModuleNotFoundError 가 났다.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import runtime_limits  # noqa: E402
 
 _claim_name = "probe_gripper_schedule"
 if "--claim-name" in sys.argv:

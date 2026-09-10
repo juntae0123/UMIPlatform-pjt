@@ -36,7 +36,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-import yaml
+# 이 줄이 없으면 `PYTHONPATH` 를 세우고 부르지 않은 호출에서 policy 임포트가 깨진다.
+# 2026-09-10 에 그렇게 큐가 안 돌았다 — 도구가 호출자 환경에 의존하면 안 된다.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import yaml  # noqa: E402
 
 AI_ROOT = Path(__file__).resolve().parents[1]
 QUEUE = AI_ROOT / "queue"
