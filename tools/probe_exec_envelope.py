@@ -59,6 +59,7 @@ from eval.exec_limits import (  # noqa: E402
     check_ros2,
     denorm,
     dominant_constraints,
+    tightest_margins,
     gripper_rad_to_gap_m,
     load_real_config,
     load_ros2_limits,
@@ -407,6 +408,8 @@ def main() -> int:
                 "clamp_pass": clamp,
                 "best_tick_pass": best_tick,
                 "verdict": verdict,
+                "ros2_tightest_margins": tightest_margins(ros2_sum),
+                "direct_tightest_margins": tightest_margins(direct_sum),
                 "episode_detail": [
                     {"seed": e["seed"], "success": bool(e["success"]),
                      "ticks": int(e["ticks"]), "nearest_tick": int(e["nearest_tick"]),
@@ -419,16 +422,31 @@ def main() -> int:
             print(f"  ROS2 통과 {100.0 * ros2_sum['episode_pass_rate']:.1f}% · "
                   f"direct(전사) {100.0 * direct_sum['episode_pass_rate']:.1f}% · "
                   f"판정 {verdict}")
-            fmt_table(f"  {label} — ROS2 위반 제약 (원문 🟢)",
-                      summarise_rows(ros2_sum, only_violations=True) or
-                      [("(위반 없음)", 0, 0, None, None)])
+            ros2_rows = summarise_rows(ros2_sum, only_violations=True)
+            if ros2_rows:
+                fmt_table(f"  {label} — ROS2 위반 제약 (원문 🟢)", ros2_rows)
+                print("  ROS2 지배 제약: " + " · ".join(
+                    f"{k} {100.0 * v:.1f}%" for k, v in dominant_constraints(ros2_sum)))
+            else:
+                # 위반이 0 이면 남는 질문은 "얼마나 여유 있게 통과했나" 다.
+                # 0.98x 통과와 0.05x 통과는 전혀 다른 상태다.
+                fmt_table(
+                    f"  {label} — ROS2 위반 0건. 한계 대비 최대 배수 (여유)",
+                    [(k, ros2_sum["metrics"][k]["violations"],
+                      ros2_sum["metrics"][k]["total"],
+                      ros2_sum["metrics"][k]["violation_rate"], v)
+                     for k, v in tightest_margins(ros2_sum)],
+                )
+                head = tightest_margins(ros2_sum, top=1)
+                if head:
+                    print(f"  ROS2 최소 여유: {head[0][0]} 가 한계의 "
+                          f"{head[0][1]:.3f}배까지 갔다 "
+                          f"(1.0 을 넘으면 거부)")
+
+            direct_rows = summarise_rows(direct_sum, only_violations=True)
             fmt_table(f"  {label} — direct-motor 위반 제약 (전사 🔵, dt={dt:.4f}s)",
-                      summarise_rows(direct_sum, only_violations=True) or
-                      [("(위반 없음)", 0, 0, None, None)])
-            top = dominant_constraints(ros2_sum)
-            if top:
-                print("  ROS2 지배 제약: " +
-                      " · ".join(f"{k} {100.0 * v:.1f}%" for k, v in top))
+                      direct_rows or [(k, 0, direct_sum["metrics"][k]["total"], 0.0, v)
+                                      for k, v in tightest_margins(direct_sum)])
             print("  시간 스케일링 → direct 통과율: " +
                   " · ".join(f"x{c['scale']:g} {100.0 * c['pass_rate']:.0f}%"
                              for c in scale_curve))

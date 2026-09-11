@@ -434,6 +434,24 @@ def merge_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def tightest_margins(
+    summary: dict[str, Any], top: int = 6
+) -> list[tuple[str, float]]:
+    """Constraints ranked by how close they came to the limit.
+    한계에 얼마나 가까웠는지 순위.
+
+    위반이 0 이어도 이 값은 남는다. **통과했을 때 알고 싶은 숫자가 이것이다** —
+    0.98x 로 통과한 것과 0.05x 로 통과한 것은 전혀 다른 상태이고, 전자는 다음
+    체크포인트에서 깨진다.
+    """
+    rows = [
+        (k, r["max_ratio"])
+        for k, r in summary["metrics"].items()
+        if r.get("max_ratio") is not None
+    ]
+    return sorted(rows, key=lambda kv: kv[1], reverse=True)[:top]
+
+
 def dominant_constraints(summary: dict[str, Any], top: int = 5) -> list[tuple[str, float]]:
     """Constraints ranked by violation rate. What to fix first.
     위반율 순 제약 순위. 무엇부터 고칠지."""
