@@ -74,7 +74,23 @@ for k,v in r.items():
 | 크다 (>50) | `grasp_tol_m=0.005` 가 만족되지 않는다 | tolerance 스윕 — **1 tolerance · 1 ckpt 로 축소.** `PREREG_gripper_oracle_tolerance_0910.md` 재사용 |
 | 작다 (<10) | 닫기는 닫는데 성공률이 낮다 | 원인은 tolerance 가 아니다 → 폐쇄 후 들어올리기 (`probe_freeze` 계열) |
 
-이걸 먼저 하는 이유: 공짜이고, 계측기 신뢰를 회복해야 아래 판정들이 의미를 갖는다.
+**실행 완료 (2026-09-11) 🟢 — `never_closed = 91/100`.**
+
+```
+learned  11/100  never_closed  0
+fixed67  35/100  never_closed  0
+fixed75  36/100  never_closed  0
+oracle    3/100  never_closed 91   ← 100편 중 91편에서 한 번도 안 닫았다
+```
+
+원인 확정: `_oracle_ready()` 는 3D 거리 5mm 조건인데 정책의 실패 에피소드 최근접
+수평거리 중앙이 14.3mm 다. **정책이 5mm 안으로 못 들어가서 조건이 발동하지 않는다.**
+oracle 은 "완벽한 폐쇄 시점" 이 아니라 "정책이 5mm 안에 들어오면 닫아준다" 였다.
+→ 기존 oracle 수치 전부 무효 (성능이 아니라 tolerance 미충족률). L72 갱신.
+
+**tolerance 스윕은 하지 마라.** 반쪽 처방이다 — ±15mm 에서 재생 성공률이 1/4 이라
+발동시켜도 대부분 놓친다. 대신 정의를 바꾼다 → `docs/PREREG_oracle_best_tick_0911.md`
+(에피소드별 최근접 틱에 닫는 2패스 상한 계측기). **이것이 스크립트 1 보다 먼저다.**
 
 ### 스크립트 1 — 손실 항 분리 기록 (작다)
 
