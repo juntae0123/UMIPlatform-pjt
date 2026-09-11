@@ -471,6 +471,11 @@ class BCPolicy:
         state = torch.from_numpy(np.asarray(obs.state, dtype=np.float32)).unsqueeze(0)
         state = state.to(self.device)
         raw = self.model(images, state)
+        # 헤드의 원 출력을 남긴다. `joint_delta_gripper_binary` 에서 그리퍼 채널은
+        # 로짓이고, `to_action` 이 부호만 남기고 크기를 버린다 — 계측에는 크기가
+        # 필요하다 (조건부 확률이 0.5 아래에 눌렸는지 요동치는지가 처방을 가른다).
+        # 동작에는 영향이 없다. 읽기만 한다.
+        self.last_raw = raw.squeeze(0).detach().cpu().numpy().astype(np.float64)
         out = to_action(raw, state, self.action_space, self._t_mean, self._t_std)
         action = out.squeeze(0).cpu().numpy().astype(np.float32)
         action = check_action(action, self.name)
