@@ -45,7 +45,38 @@ B-v5      21/23/21   평균 21.7%  범위 폭  2%p   구간 17.4~26.7%   rc=1 �
 학습에서 갈렸다.** 그런데 지금은 총손실만 기록해서 팔에서 갈렸는지 그리퍼에서
 갈렸는지 알 수 없다.
 
-### 스크립트 1 — 손실 항 분리 기록 (먼저, 작다)
+### 스크립트 0 — oracle 계측기 (먼저. 공짜다)
+
+**정정 (2026-09-11): E2 를 "진단 정교화"라며 접은 것은 틀렸다.** 그건 정교화가 아니라
+**계측기 수리**였다. 사용자가 뒤집었고 그 판단이 맞다. 지금 남은 핵심 질문이
+"팔이 못 가나 / 닫을 때를 못 보나" 인데 `oracle` 이 바로 그 둘을 가르는 계측기다.
+고장난 채로 두면 그 질문에 답할 수 없다 (L72).
+
+그리고 **첫 답은 이미 디스크에 있다.** `probe_gripper_schedule.py` 는 `never_closed` 를
+계산해 `result.json` 에 담는다 — 콘솔에 안 찍었을 뿐이다.
+
+```bash
+# [서버]
+cd ~/S15P21A103/AI && python3 -c "
+import json,glob
+p=sorted(glob.glob('out/e1_v5_seed0_*/result.json'))[-1]
+r=json.load(open(p))['results']
+print(p)
+for k,v in r.items():
+    for c in ('learned','fixed67','fixed75','oracle'):
+        d=v[c]
+        print(f'{c:9s} {d[\"success\"]:3d}/100  never_closed {d[\"never_closed\"]:>4}  close_tick {d[\"median_close_tick\"]}')
+"
+```
+
+| oracle `never_closed` | 뜻 | 다음 |
+|---|---|---|
+| 크다 (>50) | `grasp_tol_m=0.005` 가 만족되지 않는다 | tolerance 스윕 — **1 tolerance · 1 ckpt 로 축소.** `PREREG_gripper_oracle_tolerance_0910.md` 재사용 |
+| 작다 (<10) | 닫기는 닫는데 성공률이 낮다 | 원인은 tolerance 가 아니다 → 폐쇄 후 들어올리기 (`probe_freeze` 계열) |
+
+이걸 먼저 하는 이유: 공짜이고, 계측기 신뢰를 회복해야 아래 판정들이 의미를 갖는다.
+
+### 스크립트 1 — 손실 항 분리 기록 (작다)
 
 `policy/train_bc.py` 의 `ArmL1GripperBCE.forward` 가 두 항을 합쳐서만 낸다.
 epoch 별 `arm_l1` 과 `grip_bce` 를 따로 `history` 와 EXP_LOG `result` 에 남긴다.
@@ -72,7 +103,9 @@ epoch 별 `arm_l1` 과 `grip_bce` 를 따로 `history` 와 EXP_LOG `result` 에 
 - 5-run 확장 (위 이유)
 - `pos_weight`·손실 가중치 튜닝 (사전등록에 1.0 고정으로 박았다. 결과 보고 고치면 사후 합리화)
 - oracle 수치 사용 (L72, 고장)
-- E2·E3 재개 (폐기함. 진단 정교화라 마감 대비 가치 없음)
+- **E3 재개** (DAgger seed 3·4). 범위 폭 63%p 는 정밀도 문제가 아니고, 대상 공간
+  `joint_delta_gripper_abs` 는 이제 안 쓴다. 폐기 유지
+- ~~E2 재개~~ → **철회.** 위 「스크립트 0」 참조. E2 는 계측기 수리이고 되살린다
 
 ## 3. 남은 기록 작업
 
