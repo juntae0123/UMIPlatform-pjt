@@ -268,9 +268,11 @@ def main() -> int:
         lo_norm[idx] = float(norm(np.array([j.min_rad]), lo, hi)[0])
         hi_norm[idx] = float(norm(np.array([j.max_rad]), lo, hi)[0])
 
+    env_rate = float(cfg["control"]["rate_hz"])
+
     print("실행 포락선 계측 — 명령열이 서보에 도달하는가")
     print(f"조건: {args.episodes}편 · seeds {seeds[0]}~{seeds[-1]} · "
-          f"{env_rate := float(cfg['control']['rate_hz']):.0f}Hz · render · "
+          f"{env_rate:.0f}Hz · render · "
           f"policy-device {args.policy_device} · jitter ±{args.jitter * 1000:.0f}mm")
     print(f"ROS2 URDF  {args.ros2_urdf.name} sha {file_digest(args.ros2_urdf)}")
     print(f"real cfg   {args.real_config.name} sha {file_digest(args.real_config)}")
