@@ -98,7 +98,7 @@ def main() -> int:
 
     rows: list[tuple[str, int, int, int, int, float | None, float | None]] = []
     total = dict(frames=0, both=0, a_only=0, b_only=0, neither=0,
-                 a_d=0, b_d=0, index_mismatch=0, missing=0)
+                 a_d=0, b_d=0, index_mismatch=0, missing=0, skipped=0)
     diffs_all: list[float] = []
     ratios_ep: list[float] = []
     gaps_a: list[float] = []
@@ -110,6 +110,11 @@ def main() -> int:
 
     for ep in episodes:
         pa, pb = args.a / ep / args.a_name, args.b / ep / args.b_name
+        if not pa.exists():
+            # 기준 파일이 없는 디렉터리는 에피소드가 아니다 (`_stale_v1` 등 작업 폴더).
+            # B 쪽 누락으로 세면 "데이터가 빈다"로 오독된다.
+            total["skipped"] += 1
+            continue
         if not pb.exists():
             total["missing"] += 1
             continue
@@ -190,7 +195,9 @@ def main() -> int:
     print(bar)
     print("1) 검출 일치도")
     print(bar)
-    print(f"에피소드            : {len(episodes)}  (B 쪽 누락 {total['missing']})")
+    n_ep = len(episodes) - total["skipped"]
+    print(f"에피소드            : {n_ep}"
+          f"  (B 쪽 누락 {total['missing']} · 기준파일 없어 제외 {total['skipped']})")
     print(f"공통 프레임         : {total['frames']}")
     print(f"A 검출              : {total['a_d']} ({total['a_d']/frames:.1%})")
     print(f"B 검출              : {total['b_d']} ({total['b_d']/frames:.1%})")
@@ -256,7 +263,7 @@ def main() -> int:
     print(f"  일치 {close_agree} · 불일치 {close_disagree} · 판정불가 {close_undecidable}")
     for ep, ca, cb in close_bad:
         print(f"    {ep}  A {ca}  B {cb}")
-    if close_undecidable > len(episodes) // 2:
+    if close_undecidable > n_ep // 2:
         print("  ⚠️ 절반 이상이 판정불가다 — (4) 의 폐쇄 미도달과 같은 원인이다.")
 
     return 0
