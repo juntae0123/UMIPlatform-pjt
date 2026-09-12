@@ -36,6 +36,17 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Windows Git Bash 에서 출력을 파이프로 넘기면 stdout 이 tty 가 아니라서 파이썬이
+# 로캘 인코딩(cp949)을 잡는다. 그러면 한글 문서에 흔한 em-dash 하나에 UnicodeEncodeError
+# 로 죽는다 -- 실행 자체는 멀쩡한데 출력 단계에서 날아간다 (2026-09-12 실제로 겪었다).
+# PYTHONIOENCODING 을 안 건 사람도 그대로 돌 수 있게 여기서 막는다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - 재설정이 안 되는 스트림이면 그냥 둔다
+        pass
+
+
 # --- 교정 상수 🔵 (황도경 구두, 2026-09-12) ------------------------------------
 MARKER_DIAMETER_MM = 15.0
 DIST_AT_GAP_MIN_MM = 37.6        # 마커 중심거리 37.6mm -> gap 0mm
