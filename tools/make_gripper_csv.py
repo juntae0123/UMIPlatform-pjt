@@ -77,6 +77,10 @@ class FrameResult:
     dist_px: float | None
     diameter_px: float | None
     status: str
+    # 마커 두 개의 픽셀 중심. hand-eye 를 영상에서 푸는 데 쓴다
+    # (tools/measure_handeye.py). gap 계산에는 영향이 없다 -- 읽기만 한다.
+    mid_u: float | None = None
+    mid_v: float | None = None
 
 
 def detect(path: Path, draft: int = 1) -> FrameResult:
@@ -158,11 +162,12 @@ def detect(path: Path, draft: int = 1) -> FrameResult:
     dist_mm = dist_px * mm_per_px
 
     span_mm = DIST_AT_GAP_MAX_MM - DIST_AT_GAP_MIN_MM
+    mid_u, mid_v = (cx0 + cx1) / 2.0, (cy0 + cy1) / 2.0
     gap_mm = (dist_mm - DIST_AT_GAP_MIN_MM) / span_mm * GAP_AT_DIST_MAX_MM
     if not (GAP_VALID_MM[0] <= gap_mm <= GAP_VALID_MM[1]):
         # 물리적으로 불가능한 값은 채우지 않는다. 채우면 학습이 그것을 배운다.
-        return FrameResult(idx, None, dist_px, dia_px, STATUS_FAILED)
-    return FrameResult(idx, gap_mm, dist_px, dia_px, STATUS_DETECTED)
+        return FrameResult(idx, None, dist_px, dia_px, STATUS_FAILED, mid_u, mid_v)
+    return FrameResult(idx, gap_mm, dist_px, dia_px, STATUS_DETECTED, mid_u, mid_v)
 
 
 def run_episode(ep: Path, draft: int = 1) -> list[FrameResult]:
